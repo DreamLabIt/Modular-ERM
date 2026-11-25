@@ -25,7 +25,7 @@ export async function createProduct(input: CreateProductInput) {
     }
 
     const stock = await tx.stockItem.create({
-      data: { productId: product.id, warehouseId: warehouse.id, quantity: input.initialStock },
+      data: { organizationId: input.organizationId, productId: product.id, warehouseId: warehouse.id, quantity: input.initialStock },
     });
     await recordOpeningStock(tx, {
       organizationId: input.organizationId,

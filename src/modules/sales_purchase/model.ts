@@ -472,6 +472,7 @@ export async function issueInvoice(input: {
   actorUserId?: string;
 }) {
   return prisma.$transaction(async (tx) => {
+    await tx.$queryRaw`SELECT id FROM "Invoice" WHERE id = ${input.invoiceId} AND "organizationId" = ${input.organizationId} FOR UPDATE`;
     const invoice = await tx.invoice.findFirst({
       where: { id: input.invoiceId, organizationId: input.organizationId },
       include: { items: true },
@@ -514,8 +515,8 @@ export async function issueInvoice(input: {
       }
     }
 
-    await tx.invoice.update({
-      where: { id: invoice.id },
+    const updated = await tx.invoice.updateMany({
+      where: { id: invoice.id, organizationId: input.organizationId, status: 'DRAFT', inventoryDeducted: false },
       data: {
         status: 'SENT',
         issueDate,
@@ -523,6 +524,9 @@ export async function issueInvoice(input: {
         inventoryDeducted: input.enabledModules.includes('inventory'),
       },
     });
+    if (updated.count !== 1) {
+      return { success: false, error: 'Invoice status changed during issue. Please retry.' } as const;
+    }
     return { success: true } as const;
   });
 }

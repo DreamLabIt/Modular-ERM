@@ -46,6 +46,21 @@ async function recordInventoryAudit(
   });
 }
 
+async function assertInventoryScope(
+  tx: Prisma.TransactionClient,
+  organizationId: string,
+  productId: string,
+  warehouseId: string,
+): Promise<{ success: true; productName: string } | { success: false; error: string }> {
+  const [product, warehouse] = await Promise.all([
+    tx.product.findFirst({ where: { id: productId, organizationId }, select: { id: true, name: true } }),
+    tx.warehouse.findFirst({ where: { id: warehouseId, organizationId }, select: { id: true } }),
+  ]);
+  if (!product) return { success: false, error: 'Product not found in this organization.' };
+  if (!warehouse) return { success: false, error: 'Warehouse not found in this organization.' };
+  return { success: true, productName: product.name };
+}
+
 /** Atomic, validated stock balance change + immutable ledger entry. */
 export async function applyStockDelta(
   tx: Prisma.TransactionClient,
@@ -64,9 +79,12 @@ export async function applyStockDelta(
     createdById?: string | null;
   },
 ): Promise<ServiceResult<{ stock: StockItem }>> {
+  const scope = await assertInventoryScope(tx, input.organizationId, input.productId, input.warehouseId);
+  if (!scope.success) return scope;
+
   const stock = await lockStockItem(tx, input.productId, input.warehouseId);
   if (!stock) {
-    return { success: false, error: `No stock record for product ${input.productId} in warehouse ${input.warehouseId}.` };
+    return { success: false, error: `No stock record for product ${scope.productName} in the selected warehouse.` };
   }
   if (!Number.isInteger(input.delta) || input.delta === 0) {
     return { success: false, error: 'Stock delta must be a non-zero whole number.' };
@@ -214,19 +232,33 @@ export async function deductStockForSales(
     const quantityError = validateQuantity(item.quantity, `Requested quantity for product ${item.productId}`);
     if (quantityError) return { success: false, error: quantityError };
 
-    let stock = await lockStockItem(tx, item.productId, item.warehouseId ?? '');
+    const product = await tx.product.findFirst({
+      where: { id: item.productId, organizationId: input.organizationId },
+      select: { id: true, name: true },
+    });
+    if (!product) {
+      return { success: false, error: 'Product not found in this organization.' };
+    }
+
+    let stock: StockItem | null = null;
+    if (item.warehouseId) {
+      const warehouse = await tx.warehouse.findFirst({
+        where: { id: item.warehouseId, organizationId: input.organizationId },
+        select: { id: true, name: true },
+      });
+      if (!warehouse) return { success: false, error: 'Warehouse not found in this organization.' };
+      stock = await lockStockItem(tx, item.productId, item.warehouseId);
+    } else {
+      const candidate = await tx.stockItem.findFirst({
+        where: { productId: item.productId, warehouse: { organizationId: input.organizationId } },
+        orderBy: { quantity: 'desc' },
+      });
+      if (candidate) {
+        stock = await lockStockItem(tx, item.productId, candidate.warehouseId);
+      }
+    }
     if (!stock) {
-      // Fall back to any stock record for this product within the organization.
-      if (!item.warehouseId) {
-        stock = await tx.stockItem.findFirst({
-          where: { productId: item.productId, warehouse: { organizationId: input.organizationId } },
-          orderBy: { quantity: 'desc' },
-        });
-      }
-      if (!stock) {
-        const product = await tx.product.findFirst({ where: { id: item.productId } });
-        return { success: false, error: `Product ${product?.name ?? item.productId} has no available stock.` };
-      }
+      return { success: false, error: `Product ${product.name} has no available stock.` };
     }
 
     const reserved = await tx.stockReservation.aggregate({
@@ -307,9 +339,14 @@ export async function transferStock(input: {
   }
   const transferNumber = `TRF-${Date.now().toString().slice(-8)}-${Math.random().toString(36).slice(2, 5).toUpperCase()}`;
   return prisma.$transaction(async (tx) => {
+    const scopeFrom = await assertInventoryScope(tx, input.organizationId, input.productId, input.fromWarehouseId);
+    if (!scopeFrom.success) return scopeFrom;
+    const scopeTo = await tx.warehouse.findFirst({ where: { id: input.toWarehouseId, organizationId: input.organizationId }, select: { id: true } });
+    if (!scopeTo) return { success: false, error: 'Destination warehouse not found in this organization.' } as const;
+
     const source = await lockStockItem(tx, input.productId, input.fromWarehouseId);
     if (!source) {
-      return { success: false, error: `Product ${input.productId} has no stock in the source warehouse.` } as const;
+      return { success: false, error: `Product ${scopeFrom.productName} has no stock in the source warehouse.` } as const;
     }
     if (source.quantity < input.quantity) {
       return {
@@ -339,7 +376,7 @@ export async function transferStock(input: {
     const destQuantity = destination ? destination.quantity + input.quantity : input.quantity;
     await tx.stockItem.upsert({
       where: { productId_warehouseId: { productId: input.productId, warehouseId: input.toWarehouseId } },
-      create: { productId: input.productId, warehouseId: input.toWarehouseId, quantity: input.quantity },
+      create: { organizationId: input.organizationId, productId: input.productId, warehouseId: input.toWarehouseId, quantity: input.quantity },
       update: { quantity: destQuantity },
     });
     const transferInMovement = await tx.stockMovement.findFirst({ where: { referenceType: 'TRANSFER', referenceId: transferNumber, movementType: 'TRANSFER_OUT' } });
@@ -376,9 +413,12 @@ export async function adjustStockPosting(input: {
   if (qtyError && input.adjustmentType !== 'COUNT_CORRECTION') return { success: false, error: qtyError };
 
   return prisma.$transaction(async (tx) => {
+    const scope = await assertInventoryScope(tx, input.organizationId, input.productId, input.warehouseId);
+    if (!scope.success) return scope;
+
     const stock = await lockStockItem(tx, input.productId, input.warehouseId);
     if (!stock) {
-      return { success: false, error: `Product ${input.productId} has no stock in warehouse ${input.warehouseId}.` } as const;
+      return { success: false, error: `Product ${scope.productName} has no stock in the selected warehouse.` } as const;
     }
     let adjustedQuantity = input.quantity;
     if (input.adjustmentType === 'INCREASE') {
@@ -442,9 +482,12 @@ export async function reserveStock(input: {
   if (quantityError) return { success: false, error: quantityError };
 
   return prisma.$transaction(async (tx) => {
+    const scope = await assertInventoryScope(tx, input.organizationId, input.productId, input.warehouseId);
+    if (!scope.success) return scope;
+
     const stock = await lockStockItem(tx, input.productId, input.warehouseId);
     if (!stock) {
-      return { success: false, error: `Product ${input.productId} has no stock in warehouse ${input.warehouseId}.` } as const;
+      return { success: false, error: `Product ${scope.productName} has no stock in the selected warehouse.` } as const;
     }
     const reserved = await tx.stockReservation.aggregate({
       where: { organizationId: input.organizationId, productId: input.productId, warehouseId: input.warehouseId, status: 'ACTIVE' },
@@ -452,11 +495,10 @@ export async function reserveStock(input: {
     });
     const available = stock.quantity - (reserved._sum.reservedQuantity ?? 0);
     if (available < input.quantity) {
-      const product = await tx.product.findFirst({ where: { id: input.productId } });
-      const warehouse = await tx.warehouse.findFirst({ where: { id: input.warehouseId } });
+      const warehouse = await tx.warehouse.findFirst({ where: { id: input.warehouseId, organizationId: input.organizationId }, select: { name: true } });
       return {
         success: false,
-        error: `Insufficient available stock for product ${product?.name ?? input.productId} in warehouse ${warehouse?.name ?? input.warehouseId}: available ${available}, requested ${input.quantity}.`,
+        error: `Insufficient available stock for product ${scope.productName} in warehouse ${warehouse?.name ?? input.warehouseId}: available ${available}, requested ${input.quantity}.`,
       } as const;
     }
     await recordInventoryAudit(tx, {

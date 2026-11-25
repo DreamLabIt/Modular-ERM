@@ -15,7 +15,7 @@ export default async function SalesInvoicesPage() {
       <div>
         <h1 className="text-2xl font-bold text-slate-900">Sales & Billing Invoices</h1>
         <p className="text-sm text-slate-500">
-          Create customer invoices with automatic inventory stock deduction.
+          Create draft sales invoices. Stock is deducted only when an invoice is issued through the Sales &amp; Purchase workflow.
         </p>
       </div>
 
@@ -55,7 +55,7 @@ export default async function SalesInvoicesPage() {
             className="rounded-lg border border-slate-300 px-3 py-2 text-sm"
           />
           <button type="submit" className="rounded-lg bg-slate-900 text-white text-sm font-medium hover:bg-slate-800 px-4 py-2">
-            Issue Invoice
+            Create Draft
           </button>
         </form>
       </div>
@@ -86,7 +86,12 @@ export default async function SalesInvoicesPage() {
                   {Number(inv.totalAmount).toLocaleString()}
                 </td>
                 <td className="px-4 py-3">
-                  <span className="px-2 py-0.5 rounded-full text-xs font-semibold bg-emerald-100 text-emerald-700">
+                  <span className={`px-2 py-0.5 rounded-full text-xs font-semibold ${
+                    inv.status === 'PAID' ? 'bg-emerald-100 text-emerald-700'
+                    : inv.status === 'CANCELLED' ? 'bg-red-100 text-red-700'
+                    : inv.status === 'OVERDUE' ? 'bg-orange-100 text-orange-700'
+                    : 'bg-slate-100 text-slate-700'
+                  }`}>
                     {inv.status}
                   </span>
                 </td>

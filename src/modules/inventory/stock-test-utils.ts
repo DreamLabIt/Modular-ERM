@@ -47,8 +47,8 @@ export async function setupCtx(prefix = 'inv-stock-test'): Promise<TestCtx> {
   });
   const warehouse = await prisma.warehouse.create({ data: { organizationId: organization.id, name: 'Main Warehouse' } });
   const secondWarehouse = await prisma.warehouse.create({ data: { organizationId: organization.id, name: 'Secondary Warehouse' } });
-  await prisma.stockItem.create({ data: { productId: product.id, warehouseId: warehouse.id, quantity: 0 } });
-  await prisma.stockItem.create({ data: { productId: product.id, warehouseId: secondWarehouse.id, quantity: 0 } });
+  await prisma.stockItem.create({ data: { organizationId: organization.id, productId: product.id, warehouseId: warehouse.id, quantity: 0 } });
+  await prisma.stockItem.create({ data: { organizationId: organization.id, productId: product.id, warehouseId: secondWarehouse.id, quantity: 0 } });
   return {
     organizationId: organization.id,
     userId: user.id,

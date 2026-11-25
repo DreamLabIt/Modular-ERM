@@ -129,7 +129,9 @@ itDb('adjustment creates both an adjustment record and a ledger movement', async
     assert.equal(adjustment.adjustmentType, 'DAMAGED');
     assert.equal(adjustment.previousQuantity, 10);
     assert.equal(adjustment.newQuantity, 7);
-    const movement = await prisma.stockMovement.findFirstOrThrow({ where: { movementType: 'DAMAGED' } });
+    const movement = await prisma.stockMovement.findFirstOrThrow({
+      where: { organizationId: ctx.organizationId, movementType: 'DAMAGED' },
+    });
     assert.equal(movement.quantity, -3);
     await assertLedgerBalances(ctx);
   } finally {

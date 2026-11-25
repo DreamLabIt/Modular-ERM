@@ -98,16 +98,31 @@ async function main() {
     });
   }
 
-  const warehouse = await prisma.warehouse.create({
-    data: {
-      organizationId: org.id,
-      name: "Main Central Warehouse",
-      location: "Dhaka",
-    },
+  let warehouse = await prisma.warehouse.findFirst({
+    where: { organizationId: org.id, name: "Main Central Warehouse" },
   });
+  if (!warehouse) {
+    warehouse = await prisma.warehouse.create({
+      data: {
+        organizationId: org.id,
+        name: "Main Central Warehouse",
+        location: "Dhaka",
+      },
+    });
+  }
 
-  const p1 = await prisma.product.create({
-    data: {
+  const p1 = await prisma.product.upsert({
+    where: {
+      organizationId_sku: { organizationId: org.id, sku: "DL-101" },
+    },
+    update: {
+      name: "Enterprise Firewall X5",
+      unit: "pcs",
+      costPrice: 35000,
+      sellingPrice: 48000,
+      reorderLevel: 10,
+    },
+    create: {
       organizationId: org.id,
       sku: "DL-101",
       name: "Enterprise Firewall X5",
@@ -118,68 +133,117 @@ async function main() {
     },
   });
 
-  await prisma.stockItem.create({
-    data: { productId: p1.id, warehouseId: warehouse.id, quantity: 30 },
-  });
-
-  const customer = await prisma.customer.create({
-    data: {
+  await prisma.stockItem.upsert({
+    where: {
+      organizationId_productId_warehouseId: {
+        organizationId: org.id,
+        productId: p1.id,
+        warehouseId: warehouse.id,
+      },
+    },
+    update: { quantity: 30 },
+    create: {
       organizationId: org.id,
-      name: "Golden Roots Agro Ltd.",
-      company: "Smart Group",
-      email: "info@goldenroots.com",
-      phone: "+8801700000000",
-      address: "Dhaka, Bangladesh",
-      status: "VIP",
+      productId: p1.id,
+      warehouseId: warehouse.id,
+      quantity: 30,
     },
   });
 
-  await prisma.lead.create({
-    data: {
-      organizationId: org.id,
-      title: "Full Agro ERP Implementation",
-      contactName: "Managing Director",
-      email: "md@smartgroup.com",
-      estimatedValue: 450000,
-      stage: "PROPOSAL",
-    },
+  let customer = await prisma.customer.findFirst({
+    where: { organizationId: org.id, email: "info@goldenroots.com" },
   });
+  if (!customer) {
+    customer = await prisma.customer.create({
+      data: {
+        organizationId: org.id,
+        name: "Golden Roots Agro Ltd.",
+        company: "Smart Group",
+        email: "info@goldenroots.com",
+        phone: "+8801700000000",
+        address: "Dhaka, Bangladesh",
+        status: "VIP",
+      },
+    });
+  }
 
-  const supplier = await prisma.supplier.create({
-    data: {
-      organizationId: org.id,
-      name: "Global Tech Distributors",
-      email: "supply@globaltech.com",
-      phone: "+8801800000000",
-    },
+  const existingLead = await prisma.lead.findFirst({
+    where: { organizationId: org.id, title: "Full Agro ERP Implementation" },
   });
+  if (!existingLead) {
+    await prisma.lead.create({
+      data: {
+        organizationId: org.id,
+        title: "Full Agro ERP Implementation",
+        contactName: "Managing Director",
+        email: "md@smartgroup.com",
+        estimatedValue: 450000,
+        stage: "PROPOSAL",
+      },
+    });
+  }
 
-  const project = await prisma.project.create({
-    data: {
-      organizationId: org.id,
-      customerId: customer.id,
-      name: "Enterprise Web & ERM Portal",
-      description: "Custom multi-module deployment and training",
-      deadline: new Date("2026-12-25"),
-      budget: 250000,
-      status: "IN_PROGRESS",
-    },
+  const existingSupplier = await prisma.supplier.findFirst({
+    where: { organizationId: org.id, email: "supply@globaltech.com" },
   });
+  if (!existingSupplier) {
+    await prisma.supplier.create({
+      data: {
+        organizationId: org.id,
+        name: "Global Tech Distributors",
+        email: "supply@globaltech.com",
+        phone: "+8801800000000",
+      },
+    });
+  }
 
-  await prisma.projectTask.create({
-    data: {
+  let project = await prisma.project.findFirst({
+    where: { organizationId: org.id, name: "Enterprise Web & ERM Portal" },
+  });
+  if (!project) {
+    project = await prisma.project.create({
+      data: {
+        organizationId: org.id,
+        customerId: customer.id,
+        name: "Enterprise Web & ERM Portal",
+        description: "Custom multi-module deployment and training",
+        deadline: new Date("2026-12-25"),
+        budget: 250000,
+        status: "IN_PROGRESS",
+      },
+    });
+  }
+
+  const existingTask = await prisma.projectTask.findFirst({
+    where: {
       organizationId: org.id,
       projectId: project.id,
       title: "Database Schema & Role Matrix Setup",
-      assigneeName: "Tanvir Hasan",
-      dueDate: new Date("2026-11-30"),
-      priority: "HIGH",
-      status: "IN_PROGRESS",
     },
   });
+  if (!existingTask) {
+    await prisma.projectTask.create({
+      data: {
+        organizationId: org.id,
+        projectId: project.id,
+        title: "Database Schema & Role Matrix Setup",
+        assigneeName: "Tanvir Hasan",
+        dueDate: new Date("2026-11-30"),
+        priority: "HIGH",
+        status: "IN_PROGRESS",
+      },
+    });
+  }
 
-  await prisma.employee.create({
-    data: {
+  await prisma.employee.upsert({
+    where: {
+      organizationId_employeeCode: {
+        organizationId: org.id,
+        employeeCode: "EMP-101",
+      },
+    },
+    update: {},
+    create: {
       organizationId: org.id,
       employeeCode: "EMP-101",
       fullName: "Tanvir Hasan",
@@ -190,26 +254,37 @@ async function main() {
     },
   });
 
-  await prisma.accountTransaction.createMany({
-    data: [
-      {
-        organizationId: org.id,
-        type: "INCOME",
-        category: "Sales Revenue",
-        reference: "INV-1001",
-        description: "Initial ERP License Advance",
-        amount: 150000,
-      },
-      {
-        organizationId: org.id,
-        type: "EXPENSE",
-        category: "Office & Cloud",
-        reference: "EXP-201",
-        description: "Cloud Server & Infrastructure",
-        amount: 22000,
-      },
-    ],
+  const existingIncome = await prisma.accountTransaction.findFirst({
+    where: { organizationId: org.id, reference: "INV-1001" },
   });
+  const existingExpense = await prisma.accountTransaction.findFirst({
+    where: { organizationId: org.id, reference: "EXP-201" },
+  });
+
+  const txToCreate = [];
+  if (!existingIncome) {
+    txToCreate.push({
+      organizationId: org.id,
+      type: "INCOME",
+      category: "Sales Revenue",
+      reference: "INV-1001",
+      description: "Initial ERP License Advance",
+      amount: 150000,
+    });
+  }
+  if (!existingExpense) {
+    txToCreate.push({
+      organizationId: org.id,
+      type: "EXPENSE",
+      category: "Office & Cloud",
+      reference: "EXP-201",
+      description: "Cloud Server & Infrastructure",
+      amount: 22000,
+    });
+  }
+  if (txToCreate.length > 0) {
+    await prisma.accountTransaction.createMany({ data: txToCreate });
+  }
 
   console.log("Seed completed! Login: admin@demo-corp.com / Admin@123");
 }

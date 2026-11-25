@@ -24,7 +24,7 @@ async function lockPurchaseOrder(
   purchaseOrderId: string,
 ) {
   await tx.$queryRaw`SELECT id FROM "PurchaseOrder" WHERE id = ${purchaseOrderId} AND "organizationId" = ${organizationId} FOR UPDATE`;
-  return tx.purchaseOrder.findFirst({ where: { id: purchaseOrderId } });
+  return tx.purchaseOrder.findFirst({ where: { id: purchaseOrderId, organizationId } });
 }
 
 function assertStatus(po: { status: string }): PurchaseOrderStatus {
@@ -394,6 +394,7 @@ export async function createGoodsReceipt(input: CreateGoodsReceiptInput & {
         } else {
           await tx.stockItem.create({
             data: {
+              organizationId: input.organizationId,
               productId: grnItem.productId,
               warehouseId: input.warehouseId,
               quantity: grnItem.acceptedQuantity,

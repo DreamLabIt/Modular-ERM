@@ -93,8 +93,8 @@ async function cleanupCtx(ctx: TestCtx) {
   await prisma.purchaseOrderApproval.deleteMany({ where: { organizationId: org } });
   await prisma.purchaseOrder.deleteMany({ where: { organizationId: org } });
   await prisma.supplier.deleteMany({ where: { organizationId: org } });
+  await prisma.stockItem.deleteMany({ where: { organizationId: org } });
   await prisma.warehouse.deleteMany({ where: { organizationId: org } });
-  await prisma.stockItem.deleteMany({ where: { warehouse: { organizationId: org } } });
   await prisma.product.deleteMany({ where: { organizationId: org } });
   await prisma.user.deleteMany({ where: { organizationId: org } });
   await prisma.role.deleteMany({ where: { organizationId: org } });

@@ -63,7 +63,7 @@ export async function updateTaskStatusAction(
   taskId: string,
   status: string,
 ): Promise<UpdateTaskStatusResult> {
-  const tenant = await requireModuleAccess('projects', 'projects.view');
+  const tenant = await requireModuleAccess('projects', 'projects.manage');
   const parsedStatus = taskStatusSchema.safeParse(status);
   if (!parsedStatus.success || !taskId.trim()) {
     return { success: false, error: 'Choose a valid task status.' };
