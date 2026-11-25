@@ -1,0 +1,355 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum ProjectTaskStatus {
+  TODO
+  IN_PROGRESS
+  REVIEW
+  COMPLETED
+}
+
+// 1. CORE: MULTI-TENANT, WHITE-LABEL, USER & ROLE
+model Organization {
+  id           String   @id @default(cuid())
+  name         String
+  slug         String   @unique
+  logoUrl      String?
+  primaryColor String   @default("#2563eb")
+  currency     String   @default("BDT")
+  address      String?
+  plan         String   @default("ENTERPRISE")
+  isActive     Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  users          User[]
+  roles          Role[]
+  modules        OrganizationModule[]
+  products       Product[]
+  warehouses     Warehouse[]
+  customers      Customer[]
+  leads          Lead[]
+  invoices       Invoice[]
+  suppliers      Supplier[]
+  purchaseOrders PurchaseOrder[]
+  employees      Employee[]
+  attendances    Attendance[]
+  leaveRequests  LeaveRequest[]
+  payrolls       Payroll[]
+  projects       Project[]
+  tasks          ProjectTask[]
+  transactions   AccountTransaction[]
+}
+
+model OrganizationModule {
+  id             String       @id @default(cuid())
+  organizationId String
+  moduleKey      String
+  isEnabled      Boolean      @default(true)
+  createdAt      DateTime     @default(now())
+
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@unique([organizationId, moduleKey])
+}
+
+model Role {
+  id             String       @id @default(cuid())
+  organizationId String
+  name           String     
+  permissions    String[]
+  isSystem       Boolean      @default(false)
+
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  users          User[]
+
+  @@unique([organizationId, name])
+}
+
+model User {
+  id             String       @id @default(cuid())
+  organizationId String
+  roleId         String
+  name           String
+  email          String       @unique
+  passwordHash   String
+  isActive       Boolean      @default(true)
+  createdAt      DateTime     @default(now())
+
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  role           Role         @relation(fields: [roleId], references: [id])
+}
+
+// 2. HR MANAGEMENT (EMPLOYEE, ATTENDANCE, LEAVE)
+model Employee {
+  id             String         @id @default(cuid())
+  organizationId String
+  employeeCode   String
+  fullName       String
+  designation    String
+  department     String
+  joiningDate    DateTime
+  basicSalary    Decimal        @db.Decimal(12, 2)
+  status         String         @default("ACTIVE")
+  createdAt      DateTime       @default(now())
+
+  organization   Organization   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  attendances    Attendance[]
+  leaveRequests  LeaveRequest[]
+  payrolls       Payroll[]
+  projectTasks   ProjectTask[]
+
+  @@unique([organizationId, employeeCode])
+}
+
+model Attendance {
+  id             String       @id @default(cuid())
+  organizationId String
+  employeeId     String
+  date           DateTime     @db.Date
+  checkIn        DateTime?
+  status         String       @default("PRESENT")
+
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  employee       Employee     @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+
+  @@unique([employeeId, date])
+}
+
+model LeaveRequest {
+  id             String       @id @default(cuid())
+  organizationId String
+  employeeId     String
+  leaveType      String  
+  startDate      DateTime     @db.Date
+  endDate        DateTime     @db.Date
+  days           Int          @default(1)
+  reason         String?
+  status         String       @default("PENDING") 
+  createdAt      DateTime     @default(now())
+
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  employee       Employee     @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+}
+
+// 3. PAYROLL (SALARY, BONUS, DEDUCTIONS)
+model Payroll {
+  id             String       @id @default(cuid())
+  organizationId String
+  employeeId     String
+  month          Int
+  year           Int
+  basicSalary    Decimal      @db.Decimal(12, 2)
+  bonus          Decimal      @default(0) @db.Decimal(12, 2)
+  deductions     Decimal      @default(0) @db.Decimal(12, 2)
+  netSalary      Decimal      @db.Decimal(12, 2)
+  status         String       @default("APPROVED") 
+  paidAt         DateTime?
+  createdAt      DateTime     @default(now())
+
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  employee       Employee     @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+
+  @@unique([employeeId, month, year])
+}
+
+// 4. CRM (CUSTOMER & CLIENT MANAGEMENT)
+model Customer {
+  id             String       @id @default(cuid())
+  organizationId String
+  name           String
+  company        String?
+  email          String?
+  phone          String?
+  address        String?
+  status         String       @default("ACTIVE") 
+  createdAt      DateTime     @default(now())
+
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  invoices       Invoice[]
+  projects       Project[]
+}
+
+model Lead {
+  id             String       @id @default(cuid())
+  organizationId String
+  title          String
+  contactName    String
+  email          String?
+  phone          String?
+  estimatedValue Decimal      @default(0) @db.Decimal(12, 2)
+  stage          String       @default("NEW") 
+  createdAt      DateTime     @default(now())
+
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+}
+
+// 5. PROJECT MANAGEMENT (PROJECTS, TASKS, DEADLINES)
+model Project {
+  id             String        @id @default(cuid())
+  organizationId String
+  customerId     String?
+  name           String
+  description    String?
+  deadline       DateTime?
+  budget         Decimal       @default(0) @db.Decimal(12, 2)
+  status         String        @default("IN_PROGRESS") 
+  createdAt      DateTime      @default(now())
+
+  organization   Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  customer       Customer?     @relation(fields: [customerId], references: [id])
+  tasks          ProjectTask[]
+}
+
+model ProjectTask {
+  id                  String            @id @default(cuid())
+  organizationId      String
+  projectId           String
+  title               String
+  assigneeName        String?
+  assigneeEmployeeId  String?
+  dueDate             DateTime?
+  priority            String            @default("MEDIUM")
+  status              ProjectTaskStatus @default(TODO)
+  createdAt           DateTime          @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  project      Project      @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  assignee     Employee?    @relation(fields: [assigneeEmployeeId], references: [id], onDelete: SetNull)
+
+  @@index([assigneeEmployeeId])
+}
+
+// 6. ACCOUNTING (INCOME, EXPENSE, PROFIT/LOSS)
+model AccountTransaction {
+  id             String       @id @default(cuid())
+  organizationId String
+  type           String  
+  category       String     
+  reference      String?
+  description    String
+  amount         Decimal      @db.Decimal(12, 2)
+  date           DateTime     @default(now())
+
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+}
+
+// 7. INVENTORY (STOCK, PURCHASE, PRODUCTS)
+model Warehouse {
+  id             String       @id @default(cuid())
+  organizationId String
+  name           String
+  location       String?
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  stocks         StockItem[]
+}
+
+model Product {
+  id                 String              @id @default(cuid())
+  organizationId     String
+  sku                String
+  name               String
+  unit               String              @default("pcs")
+  costPrice          Decimal             @db.Decimal(12, 2)
+  sellingPrice       Decimal             @db.Decimal(12, 2)
+  reorderLevel       Int                 @default(5)
+  createdAt          DateTime            @default(now())
+
+  organization       Organization        @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  stocks             StockItem[]
+  invoiceItems       InvoiceItem[]
+  purchaseOrderItems PurchaseOrderItem[]
+
+  @@unique([organizationId, sku])
+}
+
+model StockItem {
+  id          String    @id @default(cuid())
+  productId   String
+  warehouseId String
+  quantity    Int       @default(0)
+
+  product     Product   @relation(fields: [productId], references: [id], onDelete: Cascade)
+  warehouse   Warehouse @relation(fields: [warehouseId], references: [id], onDelete: Cascade)
+
+  @@unique([productId, warehouseId])
+}
+
+// 8. SALES & PURCHASE (SALES INVOICES, PURCHASE ORDERS)
+model Invoice {
+  id             String        @id @default(cuid())
+  organizationId String
+  customerId     String
+  invoiceNumber  String
+  status         String        @default("PAID") // DRAFT, SENT, PAID
+  subtotal       Decimal       @db.Decimal(12, 2)
+  taxAmount      Decimal       @default(0) @db.Decimal(12, 2)
+  totalAmount    Decimal       @db.Decimal(12, 2)
+  createdAt      DateTime      @default(now())
+
+  organization   Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  customer       Customer      @relation(fields: [customerId], references: [id])
+  items          InvoiceItem[]
+
+  @@unique([organizationId, invoiceNumber])
+}
+
+model InvoiceItem {
+  id          String  @id @default(cuid())
+  invoiceId   String
+  productId   String
+  description String
+  quantity    Int
+  unitPrice   Decimal @db.Decimal(12, 2)
+  total       Decimal @db.Decimal(12, 2)
+
+  invoice     Invoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  product     Product @relation(fields: [productId], references: [id])
+}
+
+model Supplier {
+  id             String          @id @default(cuid())
+  organizationId String
+  name           String
+  email          String?
+  phone          String?
+  address        String?
+  createdAt      DateTime        @default(now())
+
+  organization   Organization    @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  purchaseOrders PurchaseOrder[]
+}
+
+model PurchaseOrder {
+  id             String              @id @default(cuid())
+  organizationId String
+  supplierId     String
+  poNumber       String
+  status         String              @default("RECEIVED") 
+  totalAmount    Decimal             @db.Decimal(12, 2)
+  createdAt      DateTime            @default(now())
+
+  organization   Organization        @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  supplier       Supplier            @relation(fields: [supplierId], references: [id])
+  items          PurchaseOrderItem[]
+
+  @@unique([organizationId, poNumber])
+}
+
+model PurchaseOrderItem {
+  id              String        @id @default(cuid())
+  purchaseOrderId String
+  productId       String
+  quantity        Int
+  unitCost        Decimal       @db.Decimal(12, 2)
+  total           Decimal       @db.Decimal(12, 2)
+
+  purchaseOrder   PurchaseOrder @relation(fields: [purchaseOrderId], references: [id], onDelete: Cascade)
+  product         Product       @relation(fields: [productId], references: [id])
+}

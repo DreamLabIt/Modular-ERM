@@ -1,0 +1,126 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --primary: #4678bc;
+  --primary-hover: #3b5aa9;
+  --secondary: #4a92cf;
+  --accent: #2f419a;
+
+  --brand-blue: #2d72ba;
+  --brand-gradient: linear-gradient(135deg, #4678bc 0%, #4a92cf 100%);
+
+  --background: #f8fafc;
+  --foreground: #172554;
+  --surface: #ffffff;
+  --muted: #959192;
+  --border: #e2e8f0;
+
+  --text-primary: #172554;
+  --text-secondary: #475569;
+
+  --button-primary: #4678bc;
+  --button-hover: #3b5aa9;
+  --focus-ring: #4a92cf;
+
+  --status-todo: #959192;
+  --status-in-progress: #4678bc;
+  --status-review: #d97706;
+  --status-completed: #059669;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  background-color: var(--background);
+  color: var(--foreground);
+  font-family: Arial, Helvetica, sans-serif;
+  overflow-x: hidden;
+}
+
+button {
+  transition: all 0.2s ease;
+}
+
+button,
+[role="button"],
+a,
+input,
+select,
+textarea {
+  outline-color: var(--focus-ring);
+}
+
+.erp-card {
+  border: 1px solid var(--border);
+  border-radius: 0.75rem;
+  background: var(--surface);
+  box-shadow: 0 1px 2px rgb(15 23 42 / 0.04);
+}
+
+.erp-input {
+  width: 100%;
+  min-height: 42px;
+  border: 1px solid var(--border);
+  border-radius: 0.5rem;
+  background: var(--surface);
+  color: var(--text-primary);
+  padding: 0.5rem 0.75rem;
+}
+
+.erp-input:focus {
+  border-color: var(--focus-ring);
+  box-shadow: 0 0 0 3px rgb(74 146 207 / 0.14);
+  outline: none;
+}
+
+.erp-button-primary {
+  border-radius: 0.5rem;
+  background: var(--button-primary);
+  color: #ffffff;
+  padding: 0.625rem 1rem;
+  font-weight: 600;
+}
+
+.erp-button-primary:hover {
+  background: var(--button-hover);
+}
+
+.erp-button-primary:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+::selection {
+  background-color: var(--primary);
+  color: #ffffff;
+}
+
+.sidebar-scrollbar {
+  scrollbar-width: thin;
+  scrollbar-color: #475569 transparent;
+}
+
+.sidebar-scrollbar::-webkit-scrollbar {
+  width: 2px;
+}
+
+.sidebar-scrollbar::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.sidebar-scrollbar::-webkit-scrollbar-thumb {
+  background: #475569;
+  border-radius: 9999px;
+}
+
+.sidebar-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: #64748b;
+}
