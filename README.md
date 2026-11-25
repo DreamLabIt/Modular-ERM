@@ -9,7 +9,7 @@ Full-featured, white-label, multi-tenant Enterprise Resource Management (ERM) bu
 4. **Project Management (`projects`)**: Client/Internal Projects, Tasks & Deadlines
 5. **Accounting (`accounting`)**: Income, Expense Tracking & Real-time Profit/Loss Calculation
 6. **Inventory (`inventory`)**: Products, Stock Levels & Warehouse Stock Adjustments
-7. **Sales & Purchase (`sales_purchase`)**: Sales Invoices (auto stock deduction) & Purchase Orders (auto stock addition)
+7. **Sales & Purchase (`sales_purchase`)**: Draft and issued sales invoices, customer payments, stock movements, and purchase orders
 8. **Reports (`reports`)**: Cross-module Business Analytics & Financial Summaries
 9. **User & Role (`users_roles`)**: Admin, Manager, Employee Role Creation, Permissions Matrix & User Provisioning
 
@@ -58,6 +58,67 @@ but preserves permission changes already stored for existing roles. It is not
 a permission reset mechanism. Production applications should use migrations;
 do not apply migrations to a database until its backup and migration plan have
 been reviewed.
+
+## Sales Invoice & Payment Management
+
+The Sales & Purchase invoice workflow uses the persisted statuses `DRAFT`,
+`SENT`, `PARTIALLY_PAID`, `PAID`, and `CANCELLED`. `OVERDUE` is a derived
+effective status: an invoice is overdue only when it is not draft, paid, or
+cancelled, has an outstanding balance greater than zero, and its due date is
+before the current date. The derived status is not stored as a lifecycle state.
+
+Typical workflows are:
+
+- `DRAFT -> SENT -> PAID`
+- `DRAFT -> SENT -> PARTIALLY_PAID -> PAID`
+- `SENT -> OVERDUE -> PARTIALLY_PAID -> PAID`
+- `SENT -> CANCELLED`
+
+Creating an invoice always creates a draft. Draft creation creates no payment,
+accounting income, or inventory movement. An authorized user issues the draft
+by setting the issue and due dates. Issuing deducts inventory once, after
+stock availability is verified. The action is repeat-safe and will not deduct
+stock twice. Inventory-disabled organizations continue to issue and pay invoices
+without stock operations.
+
+Confirmed customer payments are stored in `InvoicePayment` records and support
+`CASH`, `BANK_TRANSFER`, `CARD`, `MOBILE_BANKING`, and `OTHER`. Full and partial
+payments are supported. The outstanding balance is
+`totalAmount - SUM(confirmed payments)`, always clamped at zero. Payments are
+created inside the invoice transaction; accounting-disabled organizations simply
+skip ledger creation. Each confirmed payment creates at most one `Sales Revenue`
+transaction, linked to the payment for duplicate protection. Payment
+corrections are not implemented as destructive edits or deletes; paid and
+partially paid invoices require a future reversal/refund workflow rather than
+silent cancellation.
+
+Required granular permissions are:
+
+- `sales_purchase.invoice.view`
+- `sales_purchase.invoice.create`
+- `sales_purchase.invoice.edit`
+- `sales_purchase.invoice.issue`
+- `sales_purchase.invoice.payment.record`
+- `sales_purchase.invoice.payment.view`
+- `sales_purchase.invoice.cancel`
+
+The legacy `sales_purchase.view` and `sales_purchase.manage` permissions remain
+accepted for backward compatibility.
+
+To upgrade an existing database:
+
+```bash
+npx prisma migrate deploy
+npx prisma validate
+npx prisma generate
+```
+
+The invoice payment migration preserves existing invoice numbers, customers,
+items, amounts, and historical statuses. It deliberately does not convert
+legacy `PAID` invoices or fabricate payment records. Historical PAID invoices
+therefore have no payment history unless payments are subsequently recorded
+through the new workflow; their prior accounting and payment provenance cannot
+be inferred from the old schema.
 
 ### Authorization Tests
 

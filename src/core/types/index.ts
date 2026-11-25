@@ -23,6 +23,13 @@ export const PERMISSION_KEYS = [
   'inventory.manage',
   'sales_purchase.view',
   'sales_purchase.manage',
+  'sales_purchase.invoice.view',
+  'sales_purchase.invoice.create',
+  'sales_purchase.invoice.edit',
+  'sales_purchase.invoice.issue',
+  'sales_purchase.invoice.payment.record',
+  'sales_purchase.invoice.payment.view',
+  'sales_purchase.invoice.cancel',
   'reports.view',
   'users_roles.view',
   'users_roles.manage',
@@ -76,6 +83,13 @@ export const ROLE_PERMISSIONS: Record<Role, readonly PermissionGrant[]> = {
     'projects.view',
     'inventory.view',
     'sales_purchase.view',
+    'sales_purchase.invoice.view',
+    'sales_purchase.invoice.create',
+    'sales_purchase.invoice.edit',
+    'sales_purchase.invoice.issue',
+    'sales_purchase.invoice.payment.record',
+    'sales_purchase.invoice.payment.view',
+    'sales_purchase.invoice.cancel',
     'sales.view',
     'sales.create',
     'reports.view',
@@ -398,6 +412,7 @@ export interface CreateInvoiceInput {
   productId: string;
   quantity: number;
   taxPercent: number;
+  dueDate?: Date;
   enabledModules: string[];
 }
 

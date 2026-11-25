@@ -88,7 +88,17 @@ export const MODULE_REGISTRY: Record<string, ERMModuleDefinition> = {
     description: 'Sales invoices, purchase orders & supplier management',
     icon: 'ShoppingCart',
     basePath: '/sales-purchase',
-    permissions: ['sales_purchase.view', 'sales_purchase.manage'],
+    permissions: [
+      'sales_purchase.view',
+      'sales_purchase.manage',
+      'sales_purchase.invoice.view',
+      'sales_purchase.invoice.create',
+      'sales_purchase.invoice.edit',
+      'sales_purchase.invoice.issue',
+      'sales_purchase.invoice.payment.record',
+      'sales_purchase.invoice.payment.view',
+      'sales_purchase.invoice.cancel',
+    ],
     navItems: [
       { label: 'Sales Invoices', href: '/sales-purchase/invoices', permission: 'sales_purchase.view' },
       { label: 'Purchase Orders', href: '/sales-purchase/purchases', permission: 'sales_purchase.view' },

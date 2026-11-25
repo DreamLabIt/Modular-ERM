@@ -36,7 +36,7 @@ async function main() {
 
   await prisma.role.upsert({
     where: { organizationId_name: { organizationId: org.id, name: "Manager" } },
-    update: { isSystem: true },
+    update: { isSystem: true, permissions: [...ROLE_PERMISSIONS.Manager] },
     create: {
       organizationId: org.id,
       name: "Manager",
