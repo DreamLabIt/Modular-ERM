@@ -23,6 +23,14 @@ export const PERMISSION_KEYS = [
   'inventory.manage',
   'sales_purchase.view',
   'sales_purchase.manage',
+  'sales_purchase.po.view',
+  'sales_purchase.po.create',
+  'sales_purchase.po.edit',
+  'sales_purchase.po.submit',
+  'sales_purchase.po.approve',
+  'sales_purchase.po.reject',
+  'sales_purchase.po.send',
+  'sales_purchase.po.cancel',
   'sales_purchase.invoice.view',
   'sales_purchase.invoice.create',
   'sales_purchase.invoice.edit',
@@ -30,6 +38,8 @@ export const PERMISSION_KEYS = [
   'sales_purchase.invoice.payment.record',
   'sales_purchase.invoice.payment.view',
   'sales_purchase.invoice.cancel',
+  'sales_purchase.grn.view',
+  'sales_purchase.grn.create',
   'reports.view',
   'users_roles.view',
   'users_roles.manage',
@@ -83,6 +93,14 @@ export const ROLE_PERMISSIONS: Record<Role, readonly PermissionGrant[]> = {
     'projects.view',
     'inventory.view',
     'sales_purchase.view',
+    'sales_purchase.po.view',
+    'sales_purchase.po.create',
+    'sales_purchase.po.edit',
+    'sales_purchase.po.submit',
+    'sales_purchase.po.approve',
+    'sales_purchase.po.reject',
+    'sales_purchase.po.send',
+    'sales_purchase.po.cancel',
     'sales_purchase.invoice.view',
     'sales_purchase.invoice.create',
     'sales_purchase.invoice.edit',
@@ -90,6 +108,8 @@ export const ROLE_PERMISSIONS: Record<Role, readonly PermissionGrant[]> = {
     'sales_purchase.invoice.payment.record',
     'sales_purchase.invoice.payment.view',
     'sales_purchase.invoice.cancel',
+    'sales_purchase.grn.view',
+    'sales_purchase.grn.create',
     'sales.view',
     'sales.create',
     'reports.view',
@@ -423,12 +443,56 @@ export interface CreateSupplierInput {
   phone: string;
 }
 
+export interface CreatePurchaseOrderItemInput {
+  productId: string;
+  quantity: number;
+  notes?: string;
+}
+
 export interface CreatePurchaseOrderInput {
   organizationId: string;
   supplierId: string;
+  warehouseId: string;
+  expectedDate?: Date | null;
+  actorUserId: string;
+  items: CreatePurchaseOrderItemInput[];
+}
+
+export interface PurchaseOrderStatusSummary {
+  purchaseOrderId: string;
+  totalRemaining: number;
+  items: Array<{
+    purchaseOrderItemId: string;
+    productId: string;
+    productName: string;
+    orderedQuantity: number;
+    previouslyReceived: number;
+    remainingQuantity: number;
+  }>;
+}
+
+export interface GoodsReceiptInputItem {
+  purchaseOrderItemId: string;
   productId: string;
-  quantity: number;
+  orderedQuantity: number;
+  previouslyReceived: number;
+  receivedQuantity: number;
+  acceptedQuantity: number;
+  rejectedQuantity: number;
+  unitCost: number;
+  notes?: string;
+}
+
+export interface CreateGoodsReceiptInput {
+  organizationId: string;
+  purchaseOrderId: string;
+  warehouseId: string;
+  receivedById: string;
+  receivedDate?: Date;
+  notes?: string;
+  idempotencyKey?: string;
   enabledModules: string[];
+  items: GoodsReceiptInputItem[];
 }
 
 export interface CreateRoleInput {

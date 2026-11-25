@@ -9,7 +9,7 @@ Full-featured, white-label, multi-tenant Enterprise Resource Management (ERM) bu
 4. **Project Management (`projects`)**: Client/Internal Projects, Tasks & Deadlines
 5. **Accounting (`accounting`)**: Income, Expense Tracking & Real-time Profit/Loss Calculation
 6. **Inventory (`inventory`)**: Products, Stock Levels & Warehouse Stock Adjustments
-7. **Sales & Purchase (`sales_purchase`)**: Draft and issued sales invoices, customer payments, stock movements, and purchase orders
+7. **Sales & Purchase (`sales_purchase`)**: Draft and issued sales invoices, customer payments, stock movements, and the Purchase Order → Goods Received Note (GRN) workflow (approval lifecycle, partial receipts, stock ledger)
 8. **Reports (`reports`)**: Cross-module Business Analytics & Financial Summaries
 9. **User & Role (`users_roles`)**: Admin, Manager, Employee Role Creation, Permissions Matrix & User Provisioning
 
@@ -119,6 +119,179 @@ legacy `PAID` invoices or fabricate payment records. Historical PAID invoices
 therefore have no payment history unless payments are subsequently recorded
 through the new workflow; their prior accounting and payment provenance cannot
 be inferred from the old schema.
+
+## Purchase Order & Goods Received Note (GRN) Workflow
+
+The Sales & Purchase module implements a real procurement workflow. Creating a
+Purchase Order does **not** change inventory; goods enter stock only through
+valid Goods Received Notes (GRNs) recorded against approved orders.
+
+### Purchase Order Lifecycle
+
+Persisted statuses: `DRAFT`, `PENDING_APPROVAL`, `APPROVED`, `SENT`,
+`PARTIALLY_RECEIVED`, `RECEIVED`, `REJECTED`, `CANCELLED`.
+
+Valid transitions (server-enforced):
+
+```mermaid
+stateDiagram-v2
+    [*] --> DRAFT
+    DRAFT --> PENDING_APPROVAL
+    DRAFT --> CANCELLED
+    PENDING_APPROVAL --> APPROVED
+    PENDING_APPROVAL --> REJECTED
+    PENDING_APPROVAL --> DRAFT
+    PENDING_APPROVAL --> CANCELLED
+    APPROVED --> SENT
+    APPROVED --> PARTIALLY_RECEIVED
+    APPROVED --> RECEIVED
+    APPROVED --> CANCELLED
+    SENT --> PARTIALLY_RECEIVED
+    SENT --> RECEIVED
+    SENT --> CANCELLED
+    PARTIALLY_RECEIVED --> PARTIALLY_RECEIVED
+    PARTIALLY_RECEIVED --> RECEIVED
+```
+
+Server actions (`src/modules/sales_purchase/actions.ts`) and service functions
+(`src/modules/sales_purchase/service.ts`):
+
+- `createPurchaseOrderAction` / `createPurchaseOrder` — creates the PO in
+  `DRAFT` with a unique PO number, supplier, warehouse, expected delivery date,
+  and items. Stock and accounting are untouched.
+- `submitPurchaseOrderForApprovalAction` — `DRAFT` → `PENDING_APPROVAL`.
+- `approvePurchaseOrderAction` — `PENDING_APPROVAL` → `APPROVED`; records who
+  approved (`PurchaseOrderApproval` row + `PurchaseOrder.approvedById/approvedAt`).
+- `rejectPurchaseOrderAction` — `PENDING_APPROVAL` → `REJECTED` with a recorded
+  reason. Rejection is terminal.
+- `sendPurchaseOrderAction` — `APPROVED` → `SENT`.
+- `cancelPurchaseOrderAction` — from `DRAFT`, `PENDING_APPROVAL`, `APPROVED`,
+  `SENT` or `PARTIALLY_RECEIVED`; records a cancellation reason.
+- `createGoodsReceiptAction` / `createGoodsReceipt` — the receipt workflow below.
+- `getPurchaseOrderRemainingQuantities(organizationId, purchaseOrderId?)` —
+  computed per-item: `Remaining = Ordered Quantity − Previously Accepted Quantity`.
+- `getGoodsReceipts(organizationId)` / `getGoodsReceiptById(organizationId, id)` /
+  `getStockMovementsForGoodsReceipt(...)` — receipt reads.
+
+### Goods Received Note (GRN)
+
+A GRN records the physical goods received from a supplier.
+
+- A GRN is only valid when the PO is in `APPROVED`, `SENT` or
+  `PARTIALLY_RECEIVED`.
+- Per PO item, `Remaining = orderedQuantity − previouslyReceived`. Receipt
+  lines cannot exceed the remaining quantity (no over-receipt by default).
+- Each line validates `receivedQuantity = acceptedQuantity + rejectedQuantity`.
+- Accepted quantities increase `StockItem` and create `StockMovement` rows with
+  movement type `PURCHASE_RECEIPT`. Rejected quantities never touch stock.
+- `previouslyReceived` on the PO item is updated by accepted quantities, so
+  repeated partial receipts accumulate until
+  `previouslyReceived >= orderedQuantity`, at which point the PO becomes
+  `RECEIVED` (with `receivedDate` set).
+- All GRN operations run inside a `$transaction`. A `SELECT … FOR UPDATE` lock on
+  the Purchase Order row serializes concurrent receipts, so two simultaneous
+  receipts cannot both consume the same remaining quantity.
+- Retry safety: `GoodsReceipt.idempotencyKey` (unique per organization) returns
+  the existing receipt on resubmission and never duplicates stock. The
+  `StockMovement` table has a unique `[goodsReceiptId, productId, warehouseId]`
+  index.
+- Account trail: when the accounting module is enabled, GRN creation creates an
+  `EXPENSE` / `Inventory Purchase` transaction referencing the GRN. Purchase
+  order creation, approval and sending never create accounting entries; supplier
+  invoices and payments are separate events.
+
+### Purchase Order UI
+
+- `/sales-purchase/purchases` — PO list with search, status filters, order/expected
+  date range filters and pagination. Columns: PO #, Supplier, Warehouse, Order
+  Date, Expected Delivery, Total, Received Qty, Received Amount, Remaining,
+  Status, Created By/At, Actions.
+- `/sales-purchase/purchases/[id]` — PO details: supplier, warehouse, order items
+  (ordered, previously received, remaining, unit cost, totals), approval
+  history, receipt history and an activity timeline. Actions per status and
+  permission: Edit Draft, Submit for Approval, Approve, Reject, Send to
+  Supplier, Cancel, and a Create GRN form.
+- `/sales-purchase/receipts` and `/sales-purchase/receipts/[id]` — GRN list and
+  details (items table with ordered/previously received/remaining/received/
+  accepted/rejected/unit cost, plus related stock movements).
+
+### Purchase Order and Inventory Integration
+
+- PO creation, approval and sending do not change `StockItem` or create
+  `StockMovement` rows.
+- Only accepted quantities from valid GRNs increase `StockItem`.
+- `StockItem.quantity` and the `StockMovement` ledger are updated in the same
+  transaction, so they stay consistent.
+
+### Audit Trail
+
+`SecurityAuditLog` rows record: `PO_CREATED`, `PO_UPDATED`,
+`PO_SUBMITTED_FOR_APPROVAL`, `PO_APPROVED`, `PO_REJECTED`, `PO_SENT`,
+`PO_CANCELLED`, `PO_PARTIALLY_RECEIVED`, `PO_RECEIVED`, `GRN_CREATED` —
+with actor, organization, timestamp, entity and before/after data.
+
+### Permissions (Sales & Purchase)
+
+- `sales_purchase.po.view` — view Purchase Orders
+- `sales_purchase.po.create` — create Purchase Orders
+- `sales_purchase.po.edit` — edit DRAFT Purchase Orders
+- `sales_purchase.po.submit` — submit for approval
+- `sales_purchase.po.approve` — approve
+- `sales_purchase.po.reject` — reject
+- `sales_purchase.po.send` — send to supplier
+- `sales_purchase.po.cancel` — cancel
+- `sales_purchase.grn.view` — view GRNs / receipt history
+- `sales_purchase.grn.create` — create GRNs
+- Legacy `sales_purchase.view` and `sales_purchase.manage` remain accepted
+  (backward compatibility).
+- The **Manager** role is seeded with the PO and GRN permissions; **Admin**
+  receives all permissions via `*`.
+
+### Database Migration & Legacy Data
+
+New migrations in `prisma/migrations/`:
+
+- `20261126100000_purchase_order_grn_workflow` — adds `GoodsReceipt`,
+  `GoodsReceiptItem`, `StockMovement`, `PurchaseOrderApproval` tables; adds
+  workflow columns to `PurchaseOrder` and `PurchaseOrderItem` (renaming legacy
+  `quantity` → `orderedQuantity`, adding `previouslyReceived`, `expectedDate`,
+  `receivedDate`, `warehouseId`, `legacyReceivedAt`, etc.). Backfills
+  `PurchaseOrder.warehouseId` from the organization's first warehouse.
+- `20261126100100_purchase_order_created_by` — adds `PurchaseOrder.createdById`.
+
+Legacy handling: Purchase Orders that existed with status `RECEIVED` before this
+workflow were marked with `legacyReceivedAt` and are treated as terminal, without
+fabricated receipt history or stock movements. Their stock was already reflected
+in existing `StockItem` values when they were created.
+
+Upgrade:
+
+```bash
+npx prisma validate
+npx prisma generate
+npx prisma migrate deploy
+npx prisma migrate status
+```
+
+Do not apply migrations to the database without a backup and migration plan
+review (see `Existing Database Upgrade` above).
+
+### Testing
+
+```bash
+npm test
+```
+
+Includes:
+
+- Purchase Order status lifecycle unit tests (`src/modules/sales_purchase/po-status.test.ts`)
+- Purchase Order + GRN database integration tests (`src/modules/sales_purchase/grn.service.test.ts`),
+  run against the development database and cleaning up their test organization after each test.
+  Coverage includes: PO creation does not change stock, full receipt updates stock,
+  partial receipts, rejected goods, over-receipt rejection, duplicate GRN handling,
+  cross-tenant rejection, and concurrent-receipt safety.
+- Existing invoice and permissions tests (`src/modules/sales_purchase/workflow.test.ts`,
+  `src/lib/permissions.test.ts`).
 
 ### Authorization Tests
 

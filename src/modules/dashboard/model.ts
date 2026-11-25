@@ -178,7 +178,9 @@ export async function getDashboardMetrics(
     prisma.purchaseOrder.count({
       where: {
         organizationId,
-        status: { not: "RECEIVED" },
+        // Non-terminal statuses: DRAFT, PENDING_APPROVAL, APPROVED, SENT,
+        // PARTIALLY_RECEIVED. RECEIVED, REJECTED and CANCELLED are terminal.
+        status: { in: ['DRAFT', 'PENDING_APPROVAL', 'APPROVED', 'SENT', 'PARTIALLY_RECEIVED'] },
       },
     }),
   ]);

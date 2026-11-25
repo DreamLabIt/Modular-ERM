@@ -6,8 +6,8 @@ import type {
   CreateSupplierInput,
 } from '@/core/types';
 import {
-  calculateTotalPaid,
   calculateOutstandingBalance,
+  calculateTotalPaid,
   getEffectiveInvoiceStatus,
   PAYMENT_METHODS,
 } from './workflow';
@@ -18,6 +18,334 @@ type ModelResult<T = undefined> =
 
 function createInvoiceNumber() {
   return `INV-${Date.now().toString().slice(-8)}-${Math.random().toString(36).slice(2, 6).toUpperCase()}`;
+}
+
+function createPoNumber() {
+  return `PO-${Date.now().toString().slice(-8)}-${Math.random().toString(36).slice(2, 5).toUpperCase()}`;
+}
+
+/**
+ * Records an audit event using the existing SecurityAuditLog infrastructure.
+ * Runs inside the caller's transaction; every actor must be a real User.
+ */
+export async function createSecurityAuditLog(
+  tx: Prisma.TransactionClient,
+  input: {
+    organizationId: string;
+    actorUserId: string;
+    targetType: string;
+    targetId: string;
+    action: string;
+    before?: Prisma.InputJsonValue;
+    after?: Prisma.InputJsonValue;
+  },
+) {
+  return tx.securityAuditLog.create({
+    data: {
+      organizationId: input.organizationId,
+      actorUserId: input.actorUserId,
+      targetType: input.targetType,
+      targetId: input.targetId,
+      action: input.action,
+      before: input.before,
+      after: input.after,
+    },
+  });
+}
+
+/**
+ * Creates a Purchase Order in DRAFT status. Stock is NOT increased, no
+ * accounting entry is created, and no goods are received here — that happens
+ * only through valid Goods Receipts.
+ */
+export async function createPurchaseOrder(input: CreatePurchaseOrderInput) {
+  if (!Array.isArray(input.items) || input.items.length === 0) {
+    return { success: false, error: 'Add at least one item to the purchase order.' } as const;
+  }
+
+  const seenProducts = new Set<string>();
+  for (const item of input.items) {
+    if (!Number.isInteger(item.quantity) || item.quantity <= 0) {
+      return { success: false, error: 'Order quantities must be positive whole numbers.' } as const;
+    }
+    if (seenProducts.has(item.productId)) {
+      return { success: false, error: 'Each product can appear only once in the order.' } as const;
+    }
+    seenProducts.add(item.productId);
+  }
+
+  const [supplier, warehouse] = await Promise.all([
+    prisma.supplier.findFirst({ where: { id: input.supplierId, organizationId: input.organizationId } }),
+    prisma.warehouse.findFirst({ where: { id: input.warehouseId, organizationId: input.organizationId } }),
+  ]);
+  if (!supplier) {
+    return { success: false, error: 'Supplier does not belong to this organization.' } as const;
+  }
+  if (!warehouse) {
+    return { success: false, error: 'Warehouse does not belong to this organization.' } as const;
+  }
+
+  const products = await prisma.product.findMany({
+    where: { organizationId: input.organizationId, id: { in: input.items.map((item) => item.productId) } },
+  });
+  const productById = new Map(products.map((product) => [product.id, product]));
+  for (const item of input.items) {
+    if (!productById.has(item.productId)) {
+      return { success: false, error: `Product ${item.productId} does not belong to this organization.` } as const;
+    }
+  }
+
+  return prisma.$transaction(async (tx) => {
+    // Generate a unique PO number within the organization scope, retrying on
+    // uniqueness conflicts like the legacy generator did.
+    let poNumber = createPoNumber();
+    for (let attempt = 0; attempt < 5; attempt++) {
+      const existing = await tx.purchaseOrder.findFirst({
+        where: { organizationId: input.organizationId, poNumber },
+      });
+      if (!existing) break;
+      poNumber = createPoNumber();
+    }
+
+    const itemData = input.items.map((item) => {
+      const product = productById.get(item.productId)!;
+      const unitCost = new Prisma.Decimal(product.costPrice);
+      const total = unitCost.mul(item.quantity);
+      return {
+        productId: product.id,
+        orderedQuantity: item.quantity,
+        previouslyReceived: 0,
+        unitCost,
+        total,
+        notes: item.notes ?? null,
+      };
+    });
+
+    const totalAmount = itemData.reduce((sum, item) => sum.plus(item.total), new Prisma.Decimal(0));
+
+    const po = await tx.purchaseOrder.create({
+      data: {
+        organizationId: input.organizationId,
+        supplierId: input.supplierId,
+        warehouseId: input.warehouseId,
+        poNumber,
+        status: 'DRAFT',
+        expectedDate: input.expectedDate ?? null,
+        createdById: input.actorUserId,
+        totalAmount,
+        items: { create: itemData },
+      },
+      include: { items: true },
+    });
+
+    await createSecurityAuditLog(tx, {
+      organizationId: input.organizationId,
+      actorUserId: input.actorUserId,
+      targetType: 'PURCHASE_ORDER',
+      targetId: po.id,
+      action: 'PO_CREATED',
+      after: {
+        poNumber: po.poNumber,
+        status: po.status,
+        supplierName: supplier.name,
+        warehouseName: warehouse.name,
+        itemCount: po.items.length,
+      },
+    });
+
+    return { success: true, data: { id: po.id, poNumber } } as const;
+  });
+}
+
+function validatePoItemInputs(items: Array<{ productId: string; quantity: number; notes?: string }>) {
+  const seenProducts = new Set<string>();
+  for (const item of items) {
+    if (!Number.isInteger(item.quantity) || item.quantity <= 0) {
+      return { success: false, error: 'Order quantities must be positive whole numbers.' } as const;
+    }
+    if (seenProducts.has(item.productId)) {
+      return { success: false, error: 'Each product can appear only once in the order.' } as const;
+    }
+    seenProducts.add(item.productId);
+  }
+  return { success: true } as const;
+}
+
+/**
+ * Edits a Purchase Order that is still in DRAFT status. Only the supplier,
+ * warehouse, expected date and order lines can change; the PO number is
+ * stable, stock is untouched and no accounting entries are created.
+ */
+export async function editPurchaseOrderDraft(input: {
+  organizationId: string;
+  purchaseOrderId: string;
+  supplierId: string;
+  warehouseId: string;
+  expectedDate: Date | null;
+  actorUserId: string;
+  items: Array<{ productId: string; quantity: number; notes?: string }>;
+}) {
+  const validation = validatePoItemInputs(input.items);
+  if (!validation.success) return validation;
+
+  const [po, supplier, warehouse, products] = await Promise.all([
+    prisma.purchaseOrder.findFirst({
+      where: { id: input.purchaseOrderId, organizationId: input.organizationId },
+    }),
+    prisma.supplier.findFirst({ where: { id: input.supplierId, organizationId: input.organizationId } }),
+    prisma.warehouse.findFirst({ where: { id: input.warehouseId, organizationId: input.organizationId } }),
+    prisma.product.findMany({
+      where: { organizationId: input.organizationId, id: { in: input.items.map((item) => item.productId) } },
+    }),
+  ]);
+  if (!po) return { success: false, error: 'Purchase Order not found.' } as const;
+  if (po.status !== 'DRAFT') return { success: false, error: 'Only draft Purchase Orders can be edited.' } as const;
+  if (!supplier) return { success: false, error: 'Supplier does not belong to this organization.' } as const;
+  if (!warehouse) return { success: false, error: 'Warehouse does not belong to this organization.' } as const;
+  const productById = new Map(products.map((product) => [product.id, product]));
+  for (const item of input.items) {
+    if (!productById.has(item.productId)) {
+      return { success: false, error: `Product ${item.productId} does not belong to this organization.` } as const;
+    }
+  }
+
+  return prisma.$transaction(async (tx) => {
+    const itemData = input.items.map((item) => {
+      const product = productById.get(item.productId)!;
+      const unitCost = new Prisma.Decimal(product.costPrice);
+      return {
+        productId: product.id,
+        orderedQuantity: item.quantity,
+        previouslyReceived: 0,
+        unitCost,
+        total: unitCost.mul(item.quantity),
+        notes: item.notes ?? null,
+      };
+    });
+    const totalAmount = itemData.reduce((sum, item) => sum.plus(item.total), new Prisma.Decimal(0));
+
+    await tx.purchaseOrderItem.deleteMany({ where: { purchaseOrderId: po.id } });
+    const updated = await tx.purchaseOrder.update({
+      where: { id: po.id },
+      data: {
+        supplierId: input.supplierId,
+        warehouseId: input.warehouseId,
+        expectedDate: input.expectedDate,
+        totalAmount,
+        items: { create: itemData },
+      },
+    });
+
+    await createSecurityAuditLog(tx, {
+      organizationId: input.organizationId,
+      actorUserId: input.actorUserId,
+      targetType: 'PURCHASE_ORDER',
+      targetId: po.id,
+      action: 'PO_UPDATED',
+      after: { poNumber: updated.poNumber, status: updated.status, itemCount: itemData.length },
+    });
+
+    return { success: true as const, data: { id: po.id } };
+  });
+}
+
+export async function listPurchaseOrderData(organizationId: string) {
+  return Promise.all([
+    prisma.purchaseOrder.findMany({
+      where: { organizationId },
+      include: {
+        supplier: true,
+        warehouse: true,
+        createdBy: true,
+        items: { include: { product: true } },
+        goodsReceipts: { include: { items: true } },
+      },
+      orderBy: { createdAt: 'desc' },
+    }),
+    prisma.supplier.findMany({ where: { organizationId }, orderBy: { name: 'asc' } }),
+    prisma.product.findMany({ where: { organizationId }, orderBy: { name: 'asc' } }),
+    prisma.warehouse.findMany({ where: { organizationId }, orderBy: { name: 'asc' } }),
+  ]);
+}
+
+export async function getPurchaseOrderDetails(organizationId: string, purchaseOrderId: string) {
+  return prisma.purchaseOrder.findFirst({
+    where: { id: purchaseOrderId, organizationId },
+    include: {
+      supplier: true,
+      warehouse: true,
+      createdBy: true,
+      approvedBy: true,
+      items: { include: { product: true } },
+      approvals: { orderBy: { createdAt: 'asc' } },
+      goodsReceipts: {
+        include: { items: { include: { product: true } } },
+        orderBy: { receivedDate: 'asc' },
+      },
+    },
+  });
+}
+
+export async function getGoodsReceipts(organizationId: string) {
+  return prisma.goodsReceipt.findMany({
+    where: { organizationId },
+    include: {
+      purchaseOrder: { include: { supplier: true, warehouse: true } },
+      warehouse: true,
+      items: { include: { product: true } },
+      receivedBy: true,
+    },
+    orderBy: { receivedDate: 'desc' },
+  });
+}
+
+export async function getGoodsReceiptById(organizationId: string, goodsReceiptId: string) {
+  return prisma.goodsReceipt.findFirst({
+    where: { id: goodsReceiptId, organizationId },
+    include: {
+      purchaseOrder: { include: { supplier: true, warehouse: true } },
+      warehouse: true,
+      items: { include: { product: true } },
+      receivedBy: true,
+    },
+  });
+}
+
+export async function getAuditLogs(organizationId: string, targetType: string, targetId: string) {
+  return prisma.securityAuditLog.findMany({
+    where: { organizationId, targetType, targetId },
+    orderBy: { createdAt: 'asc' },
+    include: { actor: true },
+  });
+}
+
+export async function getPurchaseOrderRemainingQuantities(
+  organizationId: string,
+  purchaseOrderId?: string,
+) {
+  const pos = await prisma.purchaseOrder.findMany({
+    where: { organizationId, ...(purchaseOrderId ? { id: purchaseOrderId } : {}) },
+    include: { items: { include: { product: true } } },
+  });
+
+  return pos.map((po) => ({
+    purchaseOrderId: po.id,
+    status: po.status,
+    totalRemaining: po.items.reduce((sum, item) => sum + Math.max(0, item.orderedQuantity - item.previouslyReceived), 0),
+    items: po.items.map((item) => ({
+      purchaseOrderItemId: item.id,
+      productId: item.productId,
+      productName: item.product.name,
+      unit: item.product.unit,
+      orderedQuantity: item.orderedQuantity,
+      previouslyReceived: item.previouslyReceived,
+      remainingQuantity: Math.max(0, item.orderedQuantity - item.previouslyReceived),
+    })),
+  }));
+}
+
+export function createReceiptNumber() {
+  return `GRN-${Date.now().toString().slice(-8)}-${Math.random().toString(36).slice(2, 5).toUpperCase()}`;
 }
 
 export async function createInvoice(input: CreateInvoiceInput): Promise<ModelResult<string>> {
@@ -135,7 +463,6 @@ export async function deleteDraftInvoice(organizationId: string, invoiceId: stri
     return { success: true } as const;
   });
 }
-
 export async function issueInvoice(input: {
   organizationId: string;
   invoiceId: string;
@@ -395,7 +722,6 @@ export async function listInvoiceFormOptions(organizationId: string) {
     prisma.product.findMany({ where: { organizationId }, orderBy: { name: 'asc' } }),
   ]);
 }
-
 export async function createSupplier(input: CreateSupplierInput) {
   await prisma.supplier.create({
     data: {
@@ -406,65 +732,6 @@ export async function createSupplier(input: CreateSupplierInput) {
     },
   });
 }
-
-export async function createPurchaseOrder(input: CreatePurchaseOrderInput) {
-  const product = await prisma.product.findFirst({ where: { id: input.productId, organizationId: input.organizationId } });
-  const supplier = await prisma.supplier.findFirst({ where: { id: input.supplierId, organizationId: input.organizationId } });
-  if (!product || !supplier) return false;
-
-  const unitCost = new Prisma.Decimal(product.costPrice);
-  const totalAmount = unitCost.mul(input.quantity);
-  const poNumber = `PO-${Date.now().toString().slice(-8)}-${Math.random().toString(36).slice(2, 5).toUpperCase()}`;
-
-  await prisma.$transaction(async (tx) => {
-    await tx.purchaseOrder.create({
-      data: {
-        organizationId: input.organizationId,
-        supplierId: input.supplierId,
-        poNumber,
-        status: 'RECEIVED',
-        totalAmount,
-        items: { create: [{ productId: product.id, quantity: input.quantity, unitCost, total: totalAmount }] },
-      },
-    });
-    if (input.enabledModules.includes('inventory')) {
-      const warehouse = await tx.warehouse.findFirst({ where: { organizationId: input.organizationId } });
-      if (warehouse) {
-        await tx.stockItem.upsert({
-          where: { productId_warehouseId: { productId: product.id, warehouseId: warehouse.id } },
-          create: { productId: product.id, warehouseId: warehouse.id, quantity: input.quantity },
-          update: { quantity: { increment: input.quantity } },
-        });
-      }
-    }
-    if (input.enabledModules.includes('accounting')) {
-      await tx.accountTransaction.create({
-        data: {
-          organizationId: input.organizationId,
-          type: 'EXPENSE',
-          category: 'Inventory Purchase',
-          reference: poNumber,
-          description: `Purchase Order ${poNumber} (${product.name} x${input.quantity})`,
-          amount: totalAmount,
-        },
-      });
-    }
-  });
-  return true;
-}
-
-export async function listPurchaseOrderData(organizationId: string) {
-  return Promise.all([
-    prisma.purchaseOrder.findMany({
-      where: { organizationId },
-      include: { supplier: true, items: { include: { product: true } } },
-      orderBy: { createdAt: 'desc' },
-    }),
-    prisma.supplier.findMany({ where: { organizationId } }),
-    prisma.product.findMany({ where: { organizationId } }),
-  ]);
-}
-
 function startOfDay(date: Date) {
   return new Date(Date.UTC(
     date.getUTCFullYear(),
