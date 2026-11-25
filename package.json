@@ -7,7 +7,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
-    "test": "node --import tsx --test src/lib/permissions.test.ts src/modules/sales_purchase/workflow.test.ts src/modules/sales_purchase/po-status.test.ts src/modules/sales_purchase/grn.service.test.ts",
+    "test": "node --import tsx --test src/lib/permissions.test.ts src/modules/sales_purchase/workflow.test.ts src/modules/sales_purchase/po-status.test.ts src/modules/sales_purchase/grn.service.test.ts src/modules/sales_purchase/invoice-inventory-integration.test.ts src/modules/inventory/stock-ledger.test.ts src/modules/inventory/stock-reservation.test.ts src/modules/inventory/stock-concurrency.test.ts",
     "db:push": "prisma db push",
     "db:seed": "tsx prisma/seed.ts"
   },

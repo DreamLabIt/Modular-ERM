@@ -407,6 +407,7 @@ export async function issueInvoiceAction(formData: FormData) {
     invoiceId: parsed.data.invoiceId,
     dueDate,
     enabledModules: tenant.enabledModules,
+    actorUserId: tenant.userId,
   });
   revalidateInvoiceRoutes();
   void result;

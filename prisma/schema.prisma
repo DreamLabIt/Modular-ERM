@@ -51,6 +51,8 @@ model Organization {
   stockMovements        StockMovement[]
   purchaseOrderApprovals PurchaseOrderApproval[]
   goodsReceipts         GoodsReceipt[]
+  stockReservations     StockReservation[]
+  stockAdjustments      StockAdjustment[]
 }
 
 model OrganizationModule {
@@ -98,6 +100,7 @@ model User {
   goodsReceipts           GoodsReceipt[]
   createdPurchaseOrders   PurchaseOrder[]   @relation("PO_Created")
   approvedPurchaseOrders  PurchaseOrder[]   @relation("PO_Approved")
+  stockAdjustments        StockAdjustment[] @relation("StockAdjustmentApprover")
 }
 
 model SecurityAuditLog {
@@ -286,6 +289,8 @@ model Warehouse {
   goodsReceipts         GoodsReceipt[]
   purchases             PurchaseOrder[]
   stockMovements        StockMovement[]
+  stockReservations     StockReservation[]
+  stockAdjustments      StockAdjustment[]
 }
 
 model Product {
@@ -306,6 +311,8 @@ model Product {
   purchaseOrderItems    PurchaseOrderItem[]
   goodsReceiptItems     GoodsReceiptItem[]
   stockMovements        StockMovement[]
+  stockReservations     StockReservation[]
+  stockAdjustments      StockAdjustment[]
 
   @@unique([organizationId, sku])
 }
@@ -347,6 +354,7 @@ model Invoice {
   items          InvoiceItem[]
   payments       InvoicePayment[]
   stockMovements InvoiceStockMovement[]
+  inventoryStockMovements StockMovement[]
 
   @@unique([organizationId, invoiceNumber])
   @@index([organizationId, status])
@@ -543,30 +551,99 @@ model GoodsReceiptItem {
 }
 
 // Stock ledger. quantity is signed: positive deltas increase StockItem.quantity
-// and negative deltas decrease it. Only PURCHASE_RECEIPT rows are created from GRNs.
+// and negative deltas decrease it. Historical movement rows are immutable.
 model StockMovement {
-  id             String   @id @default(cuid())
-  organizationId String
-  productId      String
-  warehouseId    String
-  movementType   String   // 'PURCHASE_RECEIPT' | 'SALE' | 'TRANSFER_IN' | 'TRANSFER_OUT' | 'ADJUSTMENT_IN' | 'ADJUSTMENT_OUT'
-  quantity       Int
-  referenceType  String
-  referenceId    String
-  goodsReceiptId String?
-  purchaseOrderId String?
-  unitCost       Decimal? @db.Decimal(12, 2)
-  movementDate   DateTime @default(now())
-  createdById    String?
-  createdAt      DateTime @default(now())
+  id               String   @id @default(cuid())
+  organizationId   String
+  productId        String
+  warehouseId      String
+  movementType     String   // 'OPENING_STOCK' | 'STOCK_IN' | 'STOCK_OUT' | 'SALES_DEDUCTION' | 'SALES_RETURN'
+                            // | 'TRANSFER_IN' | 'TRANSFER_OUT' | 'ADJUSTMENT_IN' | 'ADJUSTMENT_OUT'
+                            // | 'DAMAGED' | 'LOST' | 'EXPIRED' | 'PURCHASE_RECEIPT'
+  quantity         Int
+  referenceType    String
+  referenceId      String
+  referenceNumber  String?
+  previousQuantity Int?
+  newQuantity      Int?
+  notes            String?
+  goodsReceiptId   String?
+  purchaseOrderId  String?
+  invoiceId        String?
+  unitCost         Decimal? @db.Decimal(12, 2)
+  movementDate     DateTime @default(now())
+  createdById      String?
+  createdAt        DateTime @default(now())
 
   organization    Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   product         Product       @relation(fields: [productId], references: [id], onDelete: Restrict)
   warehouse       Warehouse     @relation(fields: [warehouseId], references: [id], onDelete: Restrict)
   goodsReceipt    GoodsReceipt? @relation(fields: [goodsReceiptId], references: [id], onDelete: Restrict)
   purchaseOrder   PurchaseOrder? @relation(fields: [purchaseOrderId], references: [id], onDelete: Restrict)
+  invoice         Invoice?      @relation(fields: [invoiceId], references: [id], onDelete: Restrict)
 
-  @@index([organizationId, productId, warehouseId])
+  @@index([organizationId, productId, warehouseId, movementType])
   @@index([organizationId, referenceType, referenceId])
+  @@index([organizationId, createdAt])
   @@unique([goodsReceiptId, productId, warehouseId])
+}
+
+// Reservations hold stock that is committed but not yet physically deducted,
+// e.g. sales orders waiting for invoicing. Active reservations reduce
+// "available stock" (see StockReservationStatus helpers in src/modules/inventory/service.ts).
+model StockReservation {
+  id              String   @id @default(cuid())
+  organizationId  String
+  productId       String
+  warehouseId     String
+  referenceType   String
+  referenceId     String
+  reservedQuantity Int
+  status          String   @default("ACTIVE") // ACTIVE | RELEASED | CONSUMED | EXPIRED | CANCELLED
+  expiresAt       DateTime?
+  releasedAt      DateTime?
+  consumedAt      DateTime?
+  expiredAt       DateTime?
+  cancelledAt     DateTime?
+  createdById     String
+  notes           String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  product      Product      @relation(fields: [productId], references: [id])
+  warehouse    Warehouse    @relation(fields: [warehouseId], references: [id])
+  referenceNumber String?
+
+  @@index([organizationId, status])
+  @@index([productId, status])
+  @@index([warehouseId, status])
+  @@index([organizationId, referenceType, referenceId])
+}
+
+// Approved stock corrections: physical stock changes with an auditable reason.
+model StockAdjustment {
+  id              String   @id @default(cuid())
+  organizationId  String
+  productId       String
+  warehouseId     String
+  adjustmentType  String   // INCREASE | DECREASE | DAMAGED | LOST | EXPIRED | COUNT_CORRECTION
+  quantity        Int
+  previousQuantity Int?
+  newQuantity     Int?
+  reason          String
+  referenceNumber String?
+  notes           String?
+  createdById     String
+  createdAt       DateTime @default(now())
+  approvedById    String?
+  approvedAt      DateTime?
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  product      Product      @relation(fields: [productId], references: [id])
+  warehouse    Warehouse    @relation(fields: [warehouseId], references: [id])
+  approver     User?        @relation("StockAdjustmentApprover", fields: [approvedById], references: [id], onDelete: SetNull)
+
+  @@index([organizationId, adjustmentType])
+  @@index([productId, warehouseId])
 }

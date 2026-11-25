@@ -21,6 +21,16 @@ export const PERMISSION_KEYS = [
   'accounting.manage',
   'inventory.view',
   'inventory.manage',
+  'inventory.read',
+  'inventory.create',
+  'inventory.update',
+  'inventory.adjust',
+  'inventory.transfer',
+  'inventory.reserve',
+  'inventory.release_reservation',
+  'inventory.receive_goods',
+  'inventory.view_ledger',
+  'inventory.delete',
   'sales_purchase.view',
   'sales_purchase.manage',
   'sales_purchase.po.view',
@@ -92,6 +102,15 @@ export const ROLE_PERMISSIONS: Record<Role, readonly PermissionGrant[]> = {
     'crm.view',
     'projects.view',
     'inventory.view',
+    'inventory.read',
+    'inventory.create',
+    'inventory.update',
+    'inventory.adjust',
+    'inventory.transfer',
+    'inventory.reserve',
+    'inventory.release_reservation',
+    'inventory.receive_goods',
+    'inventory.view_ledger',
     'sales_purchase.view',
     'sales_purchase.po.view',
     'sales_purchase.po.create',
@@ -434,6 +453,7 @@ export interface CreateInvoiceInput {
   taxPercent: number;
   dueDate?: Date;
   enabledModules: string[];
+  actorUserId?: string;
 }
 
 export interface CreateSupplierInput {

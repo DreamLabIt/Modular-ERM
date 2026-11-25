@@ -8,7 +8,7 @@ Full-featured, white-label, multi-tenant Enterprise Resource Management (ERM) bu
 3. **CRM (`crm`)**: Leads, Pipeline Stages & Customer/Client Management
 4. **Project Management (`projects`)**: Client/Internal Projects, Tasks & Deadlines
 5. **Accounting (`accounting`)**: Income, Expense Tracking & Real-time Profit/Loss Calculation
-6. **Inventory (`inventory`)**: Products, Stock Levels & Warehouse Stock Adjustments
+6. **Inventory (`inventory`)**: Products, warehouse-wise stock, reservations, and an immutable stock movement ledger with concurrency-safe operations
 7. **Sales & Purchase (`sales_purchase`)**: Draft and issued sales invoices, customer payments, stock movements, and the Purchase Order → Goods Received Note (GRN) workflow (approval lifecycle, partial receipts, stock ledger)
 8. **Reports (`reports`)**: Cross-module Business Analytics & Financial Summaries
 9. **User & Role (`users_roles`)**: Admin, Manager, Employee Role Creation, Permissions Matrix & User Provisioning
@@ -119,6 +119,118 @@ legacy `PAID` invoices or fabricate payment records. Historical PAID invoices
 therefore have no payment history unless payments are subsequently recorded
 through the new workflow; their prior accounting and payment provenance cannot
 be inferred from the old schema.
+
+## Inventory Management — Stock Ledger, Reservations & Concurrency
+
+### Architecture
+
+Inventory quantity lives in `StockItem.quantity` (physical stock per
+product/warehouse). Every change to it is recorded in the immutable
+`StockMovement` ledger inside the same Prisma transaction.
+
+Ledger fields include organization, product, warehouse, signed quantity
+(positive = stock in, negative = stock out), `movementType`, `unitCost`,
+`referenceType`/`referenceId`/`referenceNumber`, `previousQuantity`,
+`newQuantity`, `notes`, `createdById` and `movementDate`/`createdAt`.
+
+Supported movement types: `OPENING_STOCK`, `STOCK_IN`, `STOCK_OUT`,
+`SALES_DEDUCTION`, `SALES_RETURN`, `TRANSFER_IN`, `TRANSFER_OUT`,
+`ADJUSTMENT_IN`, `ADJUSTMENT_OUT`, `DAMAGED`, `LOST`, `EXPIRED`,
+`PURCHASE_RECEIPT`, `RESERVED`, `RESERVATION_RELEASED`.
+
+Balances:
+
+- `Physical Stock` = `StockItem.quantity`
+- `Active Reserved Stock` = SUM of ACTIVE `StockReservation.reservedQuantity`
+- `Available Stock` = Physical − Active Reserved
+
+Business rules:
+
+- No stock can go negative: every decrease is validated inside the transaction
+  before the balance and ledger entry are written.
+- Historical ledger rows are append-only; corrections use compensating entries.
+- Reservations are separate from physical movements: reserving stock does not
+  move physical inventory or create a misleading stock-out ledger entry.
+- All stock operations are tenant-scoped and permission-protected.
+- Every operation revalidates `/inventory/products`, `/inventory/stock-ledger`
+  and `/inventory/reservations` after success.
+
+### Inventory Workflow
+
+- **Stock In** (`stockInAction` → `stockIn`): validates quantity, increments
+  physical stock and records a `STOCK_IN` movement.
+- **Stock Out** (`stockOutAction` → `stockOut`): validates available physical
+  stock, decrements it and records a `STOCK_OUT` movement.
+- **Transfer** (`transferStockAction` → `transferStock`): locks the source
+  stock row, validates availability, decrements the source, creates/upserts the
+  destination stock row, and records two movements (`TRANSFER_OUT`,
+  `TRANSFER_IN`) sharing a common `referenceId`/`referenceNumber`. All in one
+  transaction; a failed transfer never leaves a one-sided change.
+- **Adjustment** (`adjustStockAction` → `adjustStockPosting`): supports
+  `INCREASE`, `DECREASE`, `DAMAGED`, `LOST`, `EXPIRED` and `COUNT_CORRECTION`,
+  requires a reason, records a `StockAdjustment` row and a matching ledger
+  movement (immutable; corrections require new adjustment entries).
+- **Reservation** (`reserveStock`): atomically checks
+  `Physical − Active Reserved >= quantity` and creates an ACTIVE
+  `StockReservation` with optional `expiresAt`. No physical movement.
+- **Release / Consume**: `releaseReservationAction` marks a reservation
+  RELEASED (restoring available stock); `consumeReservationAction` deducts
+  physical stock exactly once with a `STOCK_OUT` movement and marks it
+  CONSUMED. `expireStaleReservationsAction` marks expired ACTIVE reservations
+  EXPIRED idempotently.
+- **Sales posting** (`issueInvoice`, `sales/model.ts createInvoice`): calls
+  `deductStockForSales` inside the transaction. Draft invoices never touch
+  stock. Posting validates physical and available stock, creates
+  `SALES_DEDUCTION` movements and consumes any matching reservations. A
+  repeated posting is rejected (no double deduction). Cancelling a posted
+  invoice creates compensating `SALES_RETURN` movements and restores stock;
+  the original deduction is never edited.
+- **Purchase receipt**: GRN posting creates `PURCHASE_RECEIPT` movements only
+  for accepted quantities. PO creation/approval/sending never touch stock.
+
+### Concurrency Strategy
+
+Stock, reservation and sales operations use Prisma interactive transactions
+with `SELECT … FOR UPDATE` on the relevant `StockItem` row. The lock serializes
+concurrent operations on the same product/warehouse: a second transaction waits
+for the first to commit, then re-reads the balance inside its own transaction
+before validating. Conditional checks (no `Math.max(0, …)` clamping) reject
+oversell rather than silently zeroing stock. Tests cover two concurrent sales
+(7 + 6 units against 10 available) and concurrent reservations — at most one
+operation can consume the contested quantity.
+
+### Inventory UI
+
+- `/inventory/products` — physical, reserved and available stock per product
+  and warehouse, reorder alerts, stock valuation, and actions for Stock In,
+  Stock Out, Transfer, Adjust, View Ledger and View Reservations.
+- `/inventory/stock-ledger` — summary cards (stock in, stock out, active
+  reservations, stock value), filters (product, warehouse, movement type,
+  reference, date range), server-side pagination, and a full ledger table with
+  previous/new balances, reference links and notes.
+- `/inventory/reservations` — reservation list with status filters, and
+  release/consume/expire actions.
+
+### Permissions (Inventory)
+
+`inventory.view`, `inventory.manage` (legacy), `inventory.read`,
+`inventory.create`, `inventory.update`, `inventory.adjust`,
+`inventory.transfer`, `inventory.reserve`, `inventory.release_reservation`,
+`inventory.receive_goods`, `inventory.view_ledger`, `inventory.delete`.
+The seeded Manager role carries the inventory permissions; Admin uses `*`.
+
+### Database — Inventory Ledger
+
+New Prisma models: `StockMovement` (enhanced with `referenceNumber`,
+`previousQuantity`, `newQuantity`, `notes`, `invoiceId`), `StockReservation`,
+`StockAdjustment`; new back-relations on Organization, Product, Warehouse,
+User and Invoice. Indexes cover organization/product/warehouse/movement-type,
+organization/creation date, reservation status/reference and adjustment type.
+
+Migration `20261126113000_inventory_stock_ledger_and_reservations` creates the
+tables/indexes and backfills one `OPENING_STOCK` movement per existing
+`StockItem` balance (skipping zero quantities), so historical balances remain
+preserved and traceable.
 
 ## Purchase Order & Goods Received Note (GRN) Workflow
 
@@ -258,6 +370,10 @@ New migrations in `prisma/migrations/`:
   `receivedDate`, `warehouseId`, `legacyReceivedAt`, etc.). Backfills
   `PurchaseOrder.warehouseId` from the organization's first warehouse.
 - `20261126100100_purchase_order_created_by` — adds `PurchaseOrder.createdById`.
+- `20261126113000_inventory_stock_ledger_and_reservations` — adds the
+  `StockReservation` and `StockAdjustment` tables, enhances `StockMovement`
+  (`referenceNumber`, `previousQuantity`, `newQuantity`, `notes`, `invoiceId`),
+  indexes, and creates `OPENING_STOCK` movements for existing stock balances.
 
 Legacy handling: Purchase Orders that existed with status `RECEIVED` before this
 workflow were marked with `legacyReceivedAt` and are treated as terminal, without
@@ -290,8 +406,25 @@ Includes:
   Coverage includes: PO creation does not change stock, full receipt updates stock,
   partial receipts, rejected goods, over-receipt rejection, duplicate GRN handling,
   cross-tenant rejection, and concurrent-receipt safety.
+- Inventory ledger integration tests (`src/modules/inventory/stock-ledger.test.ts`):
+  stock in/out movements with previous/new balances, adjustments, linked transfer
+  movements, insufficient stock rejection and ledger/stock consistency.
+- Reservation tests (`src/modules/inventory/stock-reservation.test.ts`):
+  reserve, over-reservation rejection, release, consume once, expiration and
+  concurrent reservation safety.
+- Concurrency tests (`src/modules/inventory/stock-concurrency.test.ts`): two
+  simultaneous sales (7 + 6 against 10 available) never oversell; sales respect
+  reservations and consume them exactly once.
+- Sales/inventory integration tests
+  (`src/modules/sales_purchase/invoice-inventory-integration.test.ts`): draft
+  invoice does not deduct stock, posting deducts once with ledger entries,
+  insufficient stock fails, repeated posting blocked, cancellation creates
+  compensating `SALES_RETURN` entries, cross-tenant rejection.
 - Existing invoice and permissions tests (`src/modules/sales_purchase/workflow.test.ts`,
   `src/lib/permissions.test.ts`).
+
+All integration and concurrency tests use real PostgreSQL transactions via the
+development database (`DATABASE_URL`) and create/remove their own tenant data.
 
 ### Authorization Tests
 

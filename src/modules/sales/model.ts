@@ -1,4 +1,5 @@
 import { prisma } from '@/core/db/prisma';
+import { deductStockForSales } from '@/modules/inventory/service';
 import type { CreateInvoiceInput, CreateSalesCustomerInput } from '@/core/types';
 
 export async function createCustomer(input: CreateSalesCustomerInput) {
@@ -20,7 +21,7 @@ export async function createInvoice(input: CreateInvoiceInput) {
   const customer = await prisma.customer.findFirst({
     where: { id: input.customerId, organizationId: input.organizationId },
   });
-  if (!product || !customer) return false;
+  if (!product || !customer) return { success: false, error: 'Product or customer not found.' } as const;
 
   const unitPrice = Number(product.sellingPrice);
   const subtotal = unitPrice * input.quantity;
@@ -28,8 +29,8 @@ export async function createInvoice(input: CreateInvoiceInput) {
   const totalAmount = subtotal + taxAmount;
   const invoiceNumber = `INV-${Date.now().toString().slice(-6)}`;
 
-  await prisma.$transaction(async (tx) => {
-    await tx.invoice.create({
+  return prisma.$transaction(async (tx) => {
+    const invoice = await tx.invoice.create({
       data: {
         organizationId: input.organizationId,
         customerId: input.customerId,
@@ -53,16 +54,21 @@ export async function createInvoice(input: CreateInvoiceInput) {
     });
 
     if (input.enabledModules.includes('inventory')) {
-      const stock = await tx.stockItem.findFirst({ where: { productId: product.id } });
-      if (stock) {
-        await tx.stockItem.update({
-          where: { id: stock.id },
-          data: { quantity: Math.max(0, stock.quantity - input.quantity) },
-        });
+      const deduction = await deductStockForSales(tx, {
+        organizationId: input.organizationId,
+        items: [{ productId: product.id, quantity: input.quantity }],
+        referenceType: 'INVOICE',
+        referenceId: invoice.id,
+        invoiceId: invoice.id,
+        actorId: input.actorUserId ?? undefined,
+        notes: `Sales invoice ${invoiceNumber} posted`,
+      });
+      if (!deduction.success) {
+        return { success: false, error: deduction.error };
       }
     }
+    return { success: true } as const;
   });
-  return true;
 }
 
 export async function listCustomers(organizationId: string) {

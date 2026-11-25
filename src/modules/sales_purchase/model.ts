@@ -1,5 +1,6 @@
 import { Prisma } from '@prisma/client';
 import { prisma } from '@/core/db/prisma';
+import { applyStockDelta, deductStockForSales } from '@/modules/inventory/service';
 import type {
   CreateInvoiceInput,
   CreatePurchaseOrderInput,
@@ -468,6 +469,7 @@ export async function issueInvoice(input: {
   invoiceId: string;
   dueDate: Date;
   enabledModules: string[];
+  actorUserId?: string;
 }) {
   return prisma.$transaction(async (tx) => {
     const invoice = await tx.invoice.findFirst({
@@ -484,47 +486,31 @@ export async function issueInvoice(input: {
     }
 
     if (input.enabledModules.includes('inventory')) {
-      for (const item of invoice.items) {
-        let remaining = item.quantity;
-        const stocks = await tx.stockItem.findMany({
-          where: {
-            productId: item.productId,
-            warehouse: { organizationId: input.organizationId },
+      const deduction = await deductStockForSales(tx, {
+        organizationId: input.organizationId,
+        items: invoice.items.map((item) => ({
+          productId: item.productId,
+          quantity: item.quantity,
+          warehouseId: undefined,
+        })),
+        referenceType: 'INVOICE',
+        referenceId: invoice.id,
+        invoiceId: invoice.id,
+        actorId: input.actorUserId ?? undefined,
+        notes: `Invoice ${invoice.invoiceNumber} posted`,
+      });
+      if (!deduction.success) return deduction;
+      // Mirror historical display rows for backward compatibility.
+      for (const movement of deduction.data ?? []) {
+        await tx.invoiceStockMovement.create({
+          data: {
+            organizationId: input.organizationId,
+            invoiceId: invoice.id,
+            productId: movement.productId,
+            warehouseId: movement.warehouseId,
+            quantity: movement.quantity,
           },
-          orderBy: { quantity: 'desc' },
         });
-        const available = stocks.reduce((sum, stock) => sum + stock.quantity, 0);
-        if (available < remaining) {
-          return { success: false, error: `Insufficient stock for ${item.description}.` } as const;
-        }
-
-        for (const stock of stocks) {
-          if (remaining <= 0) break;
-          const deducted = Math.min(stock.quantity, remaining);
-          const updated = await tx.stockItem.updateMany({
-            where: { id: stock.id, quantity: { gte: deducted } },
-            data: { quantity: { decrement: deducted } },
-          });
-          if (updated.count !== 1) return { success: false, error: 'Stock changed concurrently. Retry issuance.' } as const;
-          await tx.invoiceStockMovement.upsert({
-            where: {
-              invoiceId_productId_warehouseId: {
-                invoiceId: invoice.id,
-                productId: item.productId,
-                warehouseId: stock.warehouseId,
-              },
-            },
-            create: {
-              organizationId: input.organizationId,
-              invoiceId: invoice.id,
-              productId: item.productId,
-              warehouseId: stock.warehouseId,
-              quantity: deducted,
-            },
-            update: { quantity: { increment: deducted } },
-          });
-          remaining -= deducted;
-        }
       }
     }
 
@@ -538,7 +524,7 @@ export async function issueInvoice(input: {
       },
     });
     return { success: true } as const;
-  }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
+  });
 }
 
 export async function recordInvoicePayment(input: {
@@ -664,15 +650,25 @@ export async function cancelInvoice(input: {
       invoice.inventoryDeducted &&
       !invoice.stockRestored
     ) {
-      for (const movement of invoice.stockMovements) {
-        await tx.stockItem.updateMany({
-          where: {
-            productId: movement.productId,
-            warehouseId: movement.warehouseId,
-            warehouse: { organizationId: input.organizationId },
-          },
-          data: { quantity: { increment: movement.quantity } },
+      // Reverse the original deduction with compensating SALES_RETURN ledger
+      // entries (immutable history); physical stock is restored now via the
+      // ledger. InvoiceStockMovement rows remain display-only history.
+      const salesDeductions = await tx.stockMovement.findMany({
+        where: { organizationId: input.organizationId, invoiceId: invoice.id, movementType: 'SALES_DEDUCTION' },
+      });
+      for (const movement of salesDeductions) {
+        const reversal = await applyStockDelta(tx, {
+          organizationId: input.organizationId,
+          productId: movement.productId,
+          warehouseId: movement.warehouseId,
+          delta: Math.abs(movement.quantity),
+          movementType: 'SALES_RETURN',
+          referenceType: 'INVOICE_CANCEL',
+          referenceId: invoice.id,
+          invoiceId: invoice.id,
+          notes: `Sales return for cancelled invoice ${invoice.invoiceNumber}`,
         });
+        if (!reversal.success) return reversal;
       }
     }
 

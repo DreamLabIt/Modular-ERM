@@ -42,6 +42,7 @@ export async function createInvoiceAction(formData: FormData) {
     quantity,
     taxPercent,
     enabledModules: tenant.enabledModules,
+    actorUserId: tenant.userId,
   });
 
   revalidatePath('/sales/invoices');
