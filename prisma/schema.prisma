@@ -45,6 +45,7 @@ model Organization {
   projects       Project[]
   tasks          ProjectTask[]
   transactions   AccountTransaction[]
+  securityAuditLogs SecurityAuditLog[]
 }
 
 model OrganizationModule {
@@ -65,9 +66,13 @@ model Role {
   name           String     
   permissions    String[]
   isSystem       Boolean      @default(false)
+  isActive       Boolean      @default(true)
+  authorizationVersion Int     @default(0)
 
   organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   users          User[]
+
+  @@unique([id, organizationId])
 
   @@unique([organizationId, name])
 }
@@ -83,7 +88,26 @@ model User {
   createdAt      DateTime     @default(now())
 
   organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  role           Role         @relation(fields: [roleId], references: [id])
+  role           Role         @relation(fields: [roleId, organizationId], references: [id, organizationId])
+  securityAuditLogs SecurityAuditLog[] @relation("SecurityAuditActor")
+}
+
+model SecurityAuditLog {
+  id             String   @id @default(cuid())
+  organizationId String
+  actorUserId    String
+  targetType     String
+  targetId       String
+  action         String
+  before         Json?
+  after          Json?
+  createdAt      DateTime @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  actor        User         @relation("SecurityAuditActor", fields: [actorUserId], references: [id], onDelete: Restrict)
+
+  @@index([organizationId, createdAt])
+  @@index([targetType, targetId])
 }
 
 // 2. HR MANAGEMENT (EMPLOYEE, ATTENDANCE, LEAVE)

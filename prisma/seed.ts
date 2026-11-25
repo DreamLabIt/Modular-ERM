@@ -1,6 +1,6 @@
 import { PrismaClient } from "@prisma/client";
 import bcrypt from "bcryptjs";
-import { ROLE_PERMISSIONS } from "../src/lib/permissions";
+import { ROLE_PERMISSIONS } from "../src/core/types";
 
 const prisma = new PrismaClient();
 
@@ -25,7 +25,7 @@ async function main() {
 
   const adminRole = await prisma.role.upsert({
     where: { organizationId_name: { organizationId: org.id, name: "Admin" } },
-    update: { permissions: [...ROLE_PERMISSIONS.Admin] },
+    update: { isSystem: true },
     create: {
       organizationId: org.id,
       name: "Admin",
@@ -36,7 +36,7 @@ async function main() {
 
   await prisma.role.upsert({
     where: { organizationId_name: { organizationId: org.id, name: "Manager" } },
-    update: { permissions: [...ROLE_PERMISSIONS.Manager] },
+    update: { isSystem: true },
     create: {
       organizationId: org.id,
       name: "Manager",
@@ -49,7 +49,7 @@ async function main() {
     where: {
       organizationId_name: { organizationId: org.id, name: "Employee" },
     },
-    update: { permissions: [...ROLE_PERMISSIONS.Employee] },
+    update: { isSystem: true },
     create: {
       organizationId: org.id,
       name: "Employee",

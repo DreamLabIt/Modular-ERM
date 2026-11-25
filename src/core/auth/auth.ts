@@ -1,15 +1,8 @@
 import NextAuth from 'next-auth';
 import Credentials from 'next-auth/providers/credentials';
 import bcrypt from 'bcryptjs';
-import { findUserForCredentials } from './model';
-
-function getStringClaim(value: unknown): string {
-  return typeof value === 'string' ? value : '';
-}
-
-function getStringArrayClaim(value: unknown): string[] {
-  return Array.isArray(value) && value.every((item) => typeof item === 'string') ? value : [];
-}
+import { getUserPermissions } from '@/lib/permissions';
+import { findUserAuthorization, findUserForCredentials } from './model';
 
 export const { handlers, signIn, signOut, auth } = NextAuth({
   session: { strategy: 'jwt' },
@@ -26,7 +19,15 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
 
         const user = await findUserForCredentials(String(credentials.email));
 
-        if (!user || !user.isActive || !user.organization.isActive) return null;
+        if (
+          !user ||
+          !user.isActive ||
+          !user.role.isActive ||
+          !user.organization.isActive ||
+          user.role.organizationId !== user.organizationId
+        ) {
+          return null;
+        }
 
         const valid = await bcrypt.compare(String(credentials.password), user.passwordHash);
         if (!valid) return null;
@@ -37,7 +38,16 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
           email: user.email,
           organizationId: user.organizationId,
           roleName: user.role.name,
-          permissions: user.role.permissions,
+          roleId: user.roleId,
+          authorizationVersion: user.role.authorizationVersion,
+          userIsActive: user.isActive,
+          roleIsActive: user.role.isActive,
+          organizationIsActive: user.organization.isActive,
+          permissions: getUserPermissions(user.role.permissions, {
+            userIsActive: user.isActive,
+            roleIsActive: user.role.isActive,
+            organizationIsActive: user.organization.isActive,
+          }),
         };
       },
     }),
@@ -46,19 +56,50 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
     async jwt({ token, user }) {
       if (user) {
         token.id = user.id;
-        token.organizationId = user.organizationId;
-        token.roleName = user.roleName;
-        token.permissions = user.permissions;
       }
       return token;
     },
     async session({ session, token }) {
-      if (session.user) {
-        session.user.id = getStringClaim(token.id);
-        session.user.organizationId = getStringClaim(token.organizationId);
-        session.user.roleName = getStringClaim(token.roleName);
-        session.user.permissions = getStringArrayClaim(token.permissions);
+      if (!session.user) return session;
+
+      const userId = typeof token.id === 'string' ? token.id : '';
+      const user = userId ? await findUserAuthorization(userId) : null;
+      const isActive = Boolean(
+        user &&
+        user.isActive &&
+        user.role.isActive &&
+        user.organization.isActive &&
+        user.role.organizationId === user.organizationId,
+      );
+
+      if (!user || !isActive) {
+        session.user.id = '';
+        session.user.organizationId = '';
+        session.user.roleId = '';
+        session.user.roleName = '';
+        session.user.permissions = [];
+        session.user.authorizationVersion = -1;
+        session.user.userIsActive = false;
+        session.user.roleIsActive = false;
+        session.user.organizationIsActive = false;
+        return session;
       }
+
+      session.user.id = user.id;
+      session.user.organizationId = user.organizationId;
+      session.user.roleId = user.roleId;
+      session.user.roleName = user.role.name;
+      session.user.authorizationVersion = user.role.authorizationVersion;
+      session.user.userIsActive = user.isActive;
+      session.user.roleIsActive = user.role.isActive;
+      session.user.organizationIsActive = user.organization.isActive;
+      session.user.permissions = getUserPermissions(user.role.permissions, {
+        userIsActive: user.isActive,
+        roleIsActive: user.role.isActive,
+        organizationIsActive: user.organization.isActive,
+      });
+      session.user.name = user.name;
+      session.user.email = user.email;
       return session;
     },
   },

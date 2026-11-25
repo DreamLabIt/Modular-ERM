@@ -35,14 +35,28 @@ export type Permission = (typeof PERMISSION_KEYS)[number];
 export type PermissionGrant = Permission | '*';
 
 export interface AuthenticatedRole {
-  roleName: string;
   permissions: readonly string[];
+  userIsActive: boolean;
+  roleIsActive: boolean;
+  organizationIsActive: boolean;
+}
+
+export interface PermissionContext {
+  permissions: readonly string[];
+  userIsActive: boolean;
+  roleIsActive: boolean;
+  organizationIsActive: boolean;
 }
 
 export interface AuthUserFields {
   organizationId: string;
   roleName: string;
   permissions: string[];
+  roleId: string;
+  authorizationVersion: number;
+  userIsActive: boolean;
+  roleIsActive: boolean;
+  organizationIsActive: boolean;
 }
 
 export interface AuthenticatedSessionUser extends AuthUserFields {
@@ -51,9 +65,6 @@ export interface AuthenticatedSessionUser extends AuthUserFields {
 
 export interface AuthTokenClaims {
   id?: string;
-  organizationId?: string;
-  roleName?: string;
-  permissions?: string[];
 }
 
 export const ROLE_PERMISSIONS: Record<Role, readonly PermissionGrant[]> = {
@@ -106,7 +117,8 @@ export interface TenantSession {
   email: string;
   roleName: string;
   organizationId: string;
-  permissions: string[];
+  authorization: PermissionContext;
+  authorizationVersion: number;
   organization: TenantOrganization;
   enabledModules: string[];
 }
@@ -434,13 +446,47 @@ export interface RegisterOrganizationInput {
   selectedModules: string[];
 }
 
+export interface ManagedRole {
+  id: string;
+  name: string;
+  permissions: string[];
+  isSystem: boolean;
+  isActive: boolean;
+  authorizationVersion: number;
+  userCount: number;
+}
+
+export interface ManagedUser {
+  id: string;
+  name: string;
+  email: string;
+  roleId: string;
+  roleName: string;
+}
+
+export interface PermissionGroup {
+  label: string;
+  permissions: Permission[];
+}
+
+export interface RoleManagementProps {
+  roles: ManagedRole[];
+  users: ManagedUser[];
+  permissionGroups: PermissionGroup[];
+  canManage: boolean;
+}
+
+export type RoleMutationResult =
+  | { success: true }
+  | { success: false; error: string };
+
 export interface SidebarProps {
   organizationName: string;
   organizationLogoUrl?: string | null;
   plan: string;
   userName: string;
   roleName: string;
-  permissions: string[];
+  authorization: PermissionContext;
   activeModules: ERMModuleDefinition[];
 }
 

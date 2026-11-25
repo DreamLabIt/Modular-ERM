@@ -44,7 +44,7 @@ export function Sidebar({
   plan,
   userName,
   roleName,
-  permissions,
+  authorization,
   activeModules,
 }: SidebarProps) {
   const pathname = usePathname();
@@ -58,7 +58,7 @@ export function Sidebar({
       navItems: module.navItems.filter(
         (item) =>
           !item.permission ||
-          hasPermission({ roleName, permissions }, item.permission),
+        hasPermission(authorization, item.permission),
       ),
     }))
     .filter((module) => module.navItems.length > 0);
@@ -221,7 +221,7 @@ export function Sidebar({
             })}
 
             <div className="pt-2 border-t border-slate-800">
-              {hasPermission({ roleName, permissions }, "settings.manage") && (
+              {hasPermission(authorization, "settings.manage") && (
                 <Link
                   href="/settings"
                   onClick={() => setMobileOpen(false)}

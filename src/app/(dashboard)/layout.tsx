@@ -18,7 +18,7 @@ export default async function DashboardLayout({
         plan={tenant.organization.plan}
         userName={tenant.name}
         roleName={tenant.roleName}
-        permissions={tenant.permissions}
+        authorization={tenant.authorization}
         activeModules={activeModules}
       />
 

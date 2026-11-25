@@ -6,7 +6,7 @@ import { hasPermission } from '@/lib/permissions';
 export async function requirePermission(requiredPermission: Permission) {
   const tenant = await getRequiredTenantSession();
 
-  if (!hasPermission({ roleName: tenant.roleName, permissions: tenant.permissions }, requiredPermission)) {
+  if (!hasPermission(tenant.authorization, requiredPermission)) {
     redirect('/dashboard?error=unauthorized');
   }
 
@@ -19,7 +19,7 @@ export async function requireModuleAccess(moduleKey: string, requiredPermission?
   if (
     requiredPermission &&
     !hasPermission(
-      { roleName: tenant.roleName, permissions: tenant.permissions },
+      tenant.authorization,
       requiredPermission,
     )
   ) {
