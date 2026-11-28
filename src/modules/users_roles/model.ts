@@ -1,6 +1,7 @@
 import { Prisma } from '@prisma/client';
 import bcrypt from 'bcryptjs';
 import { prisma } from '@/core/db/prisma';
+import { assertUsageLimit } from '@/core/billing/usage';
 import type {
   ManagedRole,
   ManagedUser,
@@ -318,6 +319,7 @@ export async function deleteRole(
 }
 
 export async function createUser(input: CreateUserInput) {
+  await assertUsageLimit(input.organizationId, 'USERS');
   const passwordHash = await bcrypt.hash(input.password, 10);
   try {
     return await prisma.$transaction(async (transaction) => {

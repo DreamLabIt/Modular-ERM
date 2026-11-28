@@ -24,6 +24,7 @@ import {
   Workflow,
   ClipboardCheck,
   Database,
+  CreditCard,
   ScrollText,
   History,
   type LucideIcon,
@@ -46,6 +47,7 @@ const iconMap: Record<string, LucideIcon> = {
   Workflow,
   ClipboardCheck,
   Database,
+  CreditCard,
   ScrollText,
   History,
 };
@@ -242,6 +244,7 @@ export function Sidebar({
                   { label: "Approvals", href: "/approvals", permissions: ["workflow.view"], icon: ClipboardCheck },
                   { label: "Workflows", href: "/workflows", permissions: ["workflow.view", "workflow.manage"], icon: Workflow },
                   { label: "Notifications", href: "/notifications", permissions: ["notifications.view"], icon: Bell },
+                  { label: "Billing & Plans", href: "/dashboard/billing", permissions: ["billing.view", "billing.manage"], icon: CreditCard },
                   { label: "Settings", href: "/settings", permissions: ["settings.manage"], icon: Settings },
                   { label: "Security & Audit", href: "/settings/security", permissions: ["audit.view", "login_history.view", "sessions.manage"], icon: ScrollText },
                   { label: "Data Management", href: "/settings/data-management", permissions: ["data.export", "data.import"], icon: Database },

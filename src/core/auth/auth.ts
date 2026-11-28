@@ -12,6 +12,7 @@ import {
 } from '@/core/security/sessions';
 import { getClientRequestInfo, recordLoginEvent } from '@/core/security/login-history';
 import { recordAuditLog } from '@/core/audit';
+import { prisma } from '@/core/db/prisma';
 
 function numberFromEnv(name: string, fallback: number): number {
   const parsed = Number(process.env[name]);
@@ -165,14 +166,92 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
         };
       },
     }),
+    // Separate platform-level identity. Organization ADMIN roles never grant
+    // access to this provider or to /platform-admin routes.
+    Credentials({
+      id: 'platform-credentials',
+      name: 'Platform Super Admin',
+      credentials: {
+        email: { label: 'Email', type: 'email' },
+        password: { label: 'Password', type: 'password' },
+      },
+      async authorize(credentials, request) {
+        if (!credentials?.email || !credentials?.password) return null;
+        const email = String(credentials.email).trim().toLowerCase().slice(0, 254);
+        const { ipAddress, userAgent } = getClientRequestInfo(request);
+
+        const result = await checkRateLimit(`platform-login:${email}`, {
+          limit: 5,
+          windowSeconds: 300,
+        });
+        if (!result.allowed) {
+          await recordAuditLog({
+            action: 'PLATFORM_LOGIN_BLOCKED',
+            resource: 'PLATFORM_ADMIN',
+            description: 'Platform login rate limit reached.',
+            ipAddress,
+            userAgent,
+          }).catch(() => undefined);
+          return null;
+        }
+
+        const admin = await prisma.platformAdmin.findUnique({ where: { email } });
+        const valid = admin?.isActive
+          ? await bcrypt.compare(String(credentials.password), admin.passwordHash)
+          : false;
+        if (!admin || !valid) {
+          await recordAuditLog({
+            action: 'PLATFORM_LOGIN_FAILED',
+            resource: 'PLATFORM_ADMIN',
+            description: 'Invalid platform administrator credentials.',
+            ipAddress,
+            userAgent,
+          }).catch(() => undefined);
+          return null;
+        }
+
+        await prisma.platformAdmin.update({
+          where: { id: admin.id },
+          data: { lastLoginAt: new Date() },
+        });
+        await recordAuditLog({
+          action: 'PLATFORM_LOGIN',
+          resource: 'PLATFORM_ADMIN',
+          resourceId: admin.id,
+          description: `Platform administrator ${admin.email} signed in.`,
+          ipAddress,
+          userAgent,
+        }).catch(() => undefined);
+
+        return {
+          id: admin.id,
+          name: admin.name,
+          email: admin.email,
+          organizationId: '',
+          roleId: '',
+          roleName: 'Platform Super Admin',
+          permissions: [],
+          authorizationVersion: 0,
+          userIsActive: true,
+          roleIsActive: true,
+          organizationIsActive: true,
+          isPlatformAdmin: true,
+          platformAdminId: admin.id,
+        };
+      },
+    }),
   ],
   callbacks: {
     async jwt({ token, user }) {
       if (user) {
         token.id = user.id;
         token.sessionTokenId = user.sessionTokenId;
+        token.isPlatformAdmin = Boolean(user.isPlatformAdmin);
+        token.platformAdminId = user.platformAdminId;
         token.revoked = false;
       }
+
+      if (token.isPlatformAdmin) return token;
 
       if (!token.sessionTokenId) {
         token.revoked = true;
@@ -194,6 +273,40 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
     },
     async session({ session, token }) {
       if (!session.user) return session;
+
+      if (token.isPlatformAdmin) {
+        const adminId = typeof token.platformAdminId === 'string' ? token.platformAdminId : '';
+        const admin = adminId
+          ? await prisma.platformAdmin.findUnique({ where: { id: adminId } }).catch(() => null)
+          : null;
+        if (!admin?.isActive) {
+          session.user.id = '';
+          session.user.organizationId = '';
+          session.user.roleId = '';
+          session.user.roleName = '';
+          session.user.permissions = [];
+          session.user.authorizationVersion = -1;
+          session.user.userIsActive = false;
+          session.user.roleIsActive = false;
+          session.user.organizationIsActive = false;
+          session.user.isPlatformAdmin = false;
+          return session;
+        }
+        session.user.id = admin.id;
+        session.user.email = admin.email;
+        session.user.name = admin.name;
+        session.user.organizationId = '';
+        session.user.roleId = '';
+        session.user.roleName = 'Platform Super Admin';
+        session.user.permissions = [];
+        session.user.authorizationVersion = 0;
+        session.user.userIsActive = true;
+        session.user.roleIsActive = true;
+        session.user.organizationIsActive = true;
+        session.user.isPlatformAdmin = true;
+        session.user.platformAdminId = admin.id;
+        return session;
+      }
 
       const userId = typeof token.id === 'string' ? token.id : '';
       const user = userId ? await findUserAuthorization(userId) : null;

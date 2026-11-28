@@ -1,537 +1,261 @@
-# Commercial Multi-Tenant Modular ERM v2 (Full 9-Module Suite)
+# Commercial Multi-Tenant Modular ERM
 
-Full-featured, white-label, multi-tenant Enterprise Resource Management (ERM) built with Next.js 14 App Router, Prisma ORM, PostgreSQL, and NextAuth.
+A white-label, multi-tenant Enterprise Resource Management platform with nine business modules, five cross-cutting enterprise infrastructure systems, and a complete SaaS subscription/billing layer with a separately authenticated Platform Super Admin.
 
-## Complete Module List (All 9 Modules Included)
-1. **HR Management (`hrm`)**: Employees, Daily Attendance, Leave Requests & Approvals
-2. **Payroll (`payroll`)**: Monthly Salary Runs, Bonuses, Deductions, Net Pay & Disbursement
-3. **CRM (`crm`)**: Leads, Pipeline Stages & Customer/Client Management
-4. **Project Management (`projects`)**: Client/Internal Projects, Tasks & Deadlines
-5. **Accounting (`accounting`)**: Income, Expense Tracking & Real-time Profit/Loss Calculation
-6. **Inventory (`inventory`)**: Products, warehouse-wise stock, reservations, and an immutable stock movement ledger with concurrency-safe operations
-7. **Sales & Purchase (`sales_purchase`)**: Draft and issued sales invoices, customer payments, stock movements, and the Purchase Order → Goods Received Note (GRN) workflow (approval lifecycle, partial receipts, stock ledger)
-8. **Reports (`reports`)**: Cross-module Business Analytics & Financial Summaries
-9. **User & Role (`users_roles`)**: Admin, Manager, Employee Role Creation, Permissions Matrix & User Provisioning
+## 1. Project overview
 
-## Server Architecture
-- `src/app/**/page.tsx` contains the Next.js views.
-- `src/modules/**/actions.ts` contains server-action controllers for authorization, input handling, and route revalidation.
-- `src/modules/**/model.ts` contains Prisma reads and writes for each feature.
-- Shared application and domain types live in `src/core/types/index.ts`, including module inputs, permissions, auth/session contracts, dashboard data, and reusable component props. Feature modules should import shared types from `@/core/types` instead of defining duplicate contracts locally. NextAuth module augmentation stays in `src/types/next-auth.d.ts` and extends those shared auth types.
-- Authorization is based on the authenticated user's active organization role and permission grants stored in PostgreSQL. Role names do not imply permissions. Every session resolution reloads the user, role permissions, and active states from the database, so permission or role changes take effect on the user's next request without trusting stale JWT permission claims.
-- Role creation, permission updates, activation/deactivation, deletion, user provisioning, and user-role changes are organization-scoped and guarded by `users_roles.manage`. An administrator can delegate only permissions already granted to their own role. System roles cannot be renamed, deactivated, or deleted; a role with assigned users cannot be deactivated or deleted. Successful role and user-role changes write transactional records to `SecurityAuditLog`.
+Each tenant (organization) gets isolated business data, its own roles/permissions, enabled modules, subscription entitlements, usage limits and billing records. A Platform Super Admin manages plans, organizations, subscriptions, invoices, payments and platform policy from a completely separate authentication context.
 
-## Local Setup
-1. Rename `.env.example` to `.env` and update `DATABASE_URL`.
-2. Run:
-   ```bash
-   npm install
-   npx prisma migrate deploy
-   npm run db:seed
-   npm run dev
-   ```
-3. Login at `http://localhost:3000`:
-   - **Email:** `admin@demo-corp.com`
-   - **Password:** `Admin@123`
+## 2. Product features
 
-### Existing Database Upgrade
+- Nine configurable business modules with organization-level activation
+- DB-authoritative RBAC, audit logging, login history, enforceable session revocation and rate limiting
+- Configurable multi-level approval workflows with conditions, delegation and atomic business-state transitions
+- In-app/email/SMS notifications with preferences and durable scheduled reminders
+- Organization settings: currency, timezone, date format, fiscal years, taxes and atomic document numbering
+- CSV/XLSX import, CSV/XLSX/PDF export, backups, archival and retention
+- SaaS plans, free trials, monthly/yearly billing, upgrades/downgrades, module pricing, quotas, invoices, payments, grace periods, renewals and analytics
 
-For an existing database created from the previous schema, back up the database
-and inspect the SQL migrations before applying them. Run
-`npx prisma migrate deploy` before `npx prisma db push`. The project-task
-migration converts legacy `DONE` task statuses to `COMPLETED`, adds the optional
-employee assignment relation without changing existing assignee names, and
-stops if it finds any unsupported task status values. The permission migration
-adds role activation/version fields and transactional security audit storage,
-and replaces the user-role foreign key with a tenant-scoped relation. It stops
-if it finds orphaned or cross-organization user-role assignments; resolve those
-records explicitly before retrying instead of bypassing the check.
+## 3. Module list
 
-After updating the schema, validate it and regenerate Prisma Client:
-```bash
-npx prisma validate
-npx prisma generate
+| Key              | Module                                                     |
+| ---------------- | ---------------------------------------------------------- |
+| `hrm`            | Employees, attendance, leave & performance                 |
+| `payroll`        | Salary structures, runs, approvals, payslips               |
+| `crm`            | Customers, leads, opportunities                            |
+| `projects`       | Projects, tasks, time tracking, expenses                   |
+| `accounting`     | Chart of accounts, journals, ledger, banking               |
+| `inventory`      | Products, warehouses, reservations, immutable stock ledger |
+| `sales_purchase` | Quotations, invoices, POs, GRNs, bills, notes              |
+| `reports`        | Cross-module analytics & exports                           |
+| `users_roles`    | Roles, permissions, users, sessions, audit                 |
+
+`src/core/modules/registry.ts` is the canonical module registry. Do not create a second registry.
+
+## 4. Technology stack
+
+Next.js 14 App Router · React 18 · TypeScript · Prisma 5 · PostgreSQL · NextAuth v5 (JWT) · bcryptjs · Zod · Tailwind CSS · Recharts · Node's built-in test runner (`tsx`). No payment SDK or spreadsheet library is required: XLSX readers/writers use `zlib`, email/SMS/gateways use `fetch`, and PDFs use the built-in generator.
+
+## 5. System architecture
+
+```mermaid
+flowchart TB
+  UA[Organization User] --> NA[NextAuth credentials]
+  PA[Platform Super Admin] --> NP[NextAuth platform-credentials]
+  NA --> T[TenantSession + DB permissions]
+  NP --> PS[PlatformIdentity]
+  T --> G[Module guard + entitlement guard]
+  G --> M[9 business modules]
+  G --> B[Billing services]
+  PS --> PB[Platform admin services]
+  B --> DB[(PostgreSQL)]
+  M --> DB
+  CRON[Secure cron endpoints] --> DB
+  GW[Payment webhook] --> DB
 ```
 
-The seed command creates missing system roles and marks existing system roles,
-but preserves permission changes already stored for existing roles. It is not
-a permission reset mechanism. Production applications should use migrations;
-do not apply migrations to a database until its backup and migration plan have
-been reviewed.
+Server Actions live in `src/app/**/actions.ts` or `src/modules/**/actions.ts`; Prisma reads/writes live in `model.ts`/`service.ts`; shared contracts live in `src/core/types/index.ts`.
 
-## Sales Invoice & Payment Management
+## 6. Folder structure
 
-The Sales & Purchase invoice workflow uses the persisted statuses `DRAFT`,
-`SENT`, `PARTIALLY_PAID`, `PAID`, and `CANCELLED`. `OVERDUE` is a derived
-effective status: an invoice is overdue only when it is not draft, paid, or
-cancelled, has an outstanding balance greater than zero, and its due date is
-before the current date. The derived status is not stored as a lifecycle state.
-
-Typical workflows are:
-
-- `DRAFT -> SENT -> PAID`
-- `DRAFT -> SENT -> PARTIALLY_PAID -> PAID`
-- `SENT -> OVERDUE -> PARTIALLY_PAID -> PAID`
-- `SENT -> CANCELLED`
-
-Creating an invoice always creates a draft. Draft creation creates no payment,
-accounting income, or inventory movement. An authorized user issues the draft
-by setting the issue and due dates. Issuing deducts inventory once, after
-stock availability is verified. The action is repeat-safe and will not deduct
-stock twice. Inventory-disabled organizations continue to issue and pay invoices
-without stock operations.
-
-Confirmed customer payments are stored in `InvoicePayment` records and support
-`CASH`, `BANK_TRANSFER`, `CARD`, `MOBILE_BANKING`, and `OTHER`. Full and partial
-payments are supported. The outstanding balance is
-`totalAmount - SUM(confirmed payments)`, always clamped at zero. Payments are
-created inside the invoice transaction; accounting-disabled organizations simply
-skip ledger creation. Each confirmed payment creates at most one `Sales Revenue`
-transaction, linked to the payment for duplicate protection. Payment
-corrections are not implemented as destructive edits or deletes; paid and
-partially paid invoices require a future reversal/refund workflow rather than
-silent cancellation.
-
-Required granular permissions are:
-
-- `sales_purchase.invoice.view`
-- `sales_purchase.invoice.create`
-- `sales_purchase.invoice.edit`
-- `sales_purchase.invoice.issue`
-- `sales_purchase.invoice.payment.record`
-- `sales_purchase.invoice.payment.view`
-- `sales_purchase.invoice.cancel`
-
-The legacy `sales_purchase.view` and `sales_purchase.manage` permissions remain
-accepted for backward compatibility.
-
-To upgrade an existing database:
-
-```bash
-npx prisma migrate deploy
-npx prisma validate
-npx prisma generate
+```
+prisma/
+  schema.prisma
+  migrations/                 # 3 forward-only migrations
+  seed.ts                     # roles, sample org, plans, platform admin
+src/
+  app/
+    (auth)/                   # login, register
+    (dashboard)/              # all tenant pages, incl. dashboard/billing/*
+    platform-admin/           # separate platform administration area
+    api/
+      auth/[...nextauth]/      # both credential providers
+      cron/notifications/      # reminders + deliveries
+      cron/billing/            # renewals, trials, grace, downgrades
+      billing/webhooks/[provider]/
+      billing/invoices/[id]/pdf/
+      exports/download/
+  core/
+    auth/ audit/ billing/ data/ modules/ notifications/ security/
+    settings/ tenant/ ui/ workflows/ types/
+  modules/                    # nine business modules
+  shared/utils/               # CSV, PDF helpers
 ```
 
-The invoice payment migration preserves existing invoice numbers, customers,
-items, amounts, and historical statuses. It deliberately does not convert
-legacy `PAID` invoices or fabricate payment records. Historical PAID invoices
-therefore have no payment history unless payments are subsequently recorded
-through the new workflow; their prior accounting and payment provenance cannot
-be inferred from the old schema.
+## 7. Multi-tenant architecture
 
-## Inventory Management — Stock Ledger, Reservations & Concurrency
+Every tenant query includes `organizationId` from the server-side `TenantSession`. Client-provided organization ids are never trusted; `src/core/tenant/index.ts` provides `tenantWhere`, `assertOrganizationMatch` and `requireTenantRecord`. PostgreSQL row-level security is intentionally not enabled because it would require rewriting every existing query; isolation is enforced in application code and verified by cross-tenant tests.
 
-### Architecture
+## 8. Platform Super Admin vs Organization Admin
 
-Inventory quantity lives in `StockItem.quantity` (physical stock per
-product/warehouse). Every change to it is recorded in the immutable
-`StockMovement` ledger inside the same Prisma transaction.
+- **Platform Super Admin** is a dedicated `PlatformAdmin` row with its own email/password hash and a separate NextAuth provider id `platform-credentials`. An organization `Admin` role never grants platform access. Routes under `/platform-admin` call `requirePlatformAdmin()` / `assertPlatformAdmin()`.
+- **Organization Admin** may manage only their own organization's subscription under `/dashboard/billing`, guarded by `billing.view`/`billing.manage` and tenant-scoped queries.
 
-Ledger fields include organization, product, warehouse, signed quantity
-(positive = stock in, negative = stock out), `movementType`, `unitCost`,
-`referenceType`/`referenceId`/`referenceNumber`, `previousQuantity`,
-`newQuantity`, `notes`, `createdById` and `movementDate`/`createdAt`.
+Create a platform administrator by setting `PLATFORM_ADMIN_EMAIL` and `PLATFORM_ADMIN_PASSWORD` (≥12 characters) and running `npm run db:seed`. Credentials are never hardcoded.
 
-Supported movement types: `OPENING_STOCK`, `STOCK_IN`, `STOCK_OUT`,
-`SALES_DEDUCTION`, `SALES_RETURN`, `TRANSFER_IN`, `TRANSFER_OUT`,
-`ADJUSTMENT_IN`, `ADJUSTMENT_OUT`, `DAMAGED`, `LOST`, `EXPIRED`,
-`PURCHASE_RECEIPT`, `RESERVED`, `RESERVATION_RELEASED`.
+## 9. Subscription architecture
 
-Balances:
+```mermaid
+flowchart LR
+  P[SubscriptionPlan] --> PM[PlanModule entitlements]
+  P --> S[OrganizationSubscription]
+  S --> SH[SubscriptionHistory]
+  S --> SM[SubscriptionModule]
+  S --> SC[ScheduledPlanChange]
+  S --> I[BillingInvoice]
+  I --> II[BillingInvoiceItem]
+  I --> PY[Payment]
+  PY --> PA[PaymentAttempt]
+  PW[PaymentWebhookEvent] --> PY
+```
 
-- `Physical Stock` = `StockItem.quantity`
-- `Active Reserved Stock` = SUM of ACTIVE `StockReservation.reservedQuantity`
-- `Available Stock` = Physical − Active Reserved
+`OrganizationSubscription` is the single authoritative record per organization; history is append-only. Prices and limits come from the database and are never accepted from client input.
 
-Business rules:
+## 10. Subscription lifecycle
 
-- No stock can go negative: every decrease is validated inside the transaction
-  before the balance and ledger entry are written.
-- Historical ledger rows are append-only; corrections use compensating entries.
-- Reservations are separate from physical movements: reserving stock does not
-  move physical inventory or create a misleading stock-out ledger entry.
-- All stock operations are tenant-scoped and permission-protected.
-- Every operation revalidates `/inventory/products`, `/inventory/stock-ledger`
-  and `/inventory/reservations` after success.
-
-### Inventory Workflow
-
-- **Stock In** (`stockInAction` → `stockIn`): validates quantity, increments
-  physical stock and records a `STOCK_IN` movement.
-- **Stock Out** (`stockOutAction` → `stockOut`): validates available physical
-  stock, decrements it and records a `STOCK_OUT` movement.
-- **Transfer** (`transferStockAction` → `transferStock`): locks the source
-  stock row, validates availability, decrements the source, creates/upserts the
-  destination stock row, and records two movements (`TRANSFER_OUT`,
-  `TRANSFER_IN`) sharing a common `referenceId`/`referenceNumber`. All in one
-  transaction; a failed transfer never leaves a one-sided change.
-- **Adjustment** (`adjustStockAction` → `adjustStockPosting`): supports
-  `INCREASE`, `DECREASE`, `DAMAGED`, `LOST`, `EXPIRED` and `COUNT_CORRECTION`,
-  requires a reason, records a `StockAdjustment` row and a matching ledger
-  movement (immutable; corrections require new adjustment entries).
-- **Reservation** (`reserveStock`): atomically checks
-  `Physical − Active Reserved >= quantity` and creates an ACTIVE
-  `StockReservation` with optional `expiresAt`. No physical movement.
-- **Release / Consume**: `releaseReservationAction` marks a reservation
-  RELEASED (restoring available stock); `consumeReservationAction` deducts
-  physical stock exactly once with a `STOCK_OUT` movement and marks it
-  CONSUMED. `expireStaleReservationsAction` marks expired ACTIVE reservations
-  EXPIRED idempotently.
-- **Sales posting** (`issueInvoice`, `sales/model.ts createInvoice`): calls
-  `deductStockForSales` inside the transaction. Draft invoices never touch
-  stock. Posting validates physical and available stock, creates
-  `SALES_DEDUCTION` movements and consumes any matching reservations. A
-  repeated posting is rejected (no double deduction). Cancelling a posted
-  invoice creates compensating `SALES_RETURN` movements and restores stock;
-  the original deduction is never edited.
-- **Purchase receipt**: GRN posting creates `PURCHASE_RECEIPT` movements only
-  for accepted quantities. PO creation/approval/sending never touch stock.
-
-### Concurrency Strategy
-
-Stock, reservation and sales operations use Prisma interactive transactions
-with `SELECT … FOR UPDATE` on the relevant `StockItem` row. The lock serializes
-concurrent operations on the same product/warehouse: a second transaction waits
-for the first to commit, then re-reads the balance inside its own transaction
-before validating. Conditional checks (no `Math.max(0, …)` clamping) reject
-oversell rather than silently zeroing stock. Tests cover two concurrent sales
-(7 + 6 units against 10 available) and concurrent reservations — at most one
-operation can consume the contested quantity.
-
-### Inventory UI
-
-- `/inventory/products` — physical, reserved and available stock per product
-  and warehouse, reorder alerts, stock valuation, and actions for Stock In,
-  Stock Out, Transfer, Adjust, View Ledger and View Reservations.
-- `/inventory/stock-ledger` — summary cards (stock in, stock out, active
-  reservations, stock value), filters (product, warehouse, movement type,
-  reference, date range), server-side pagination, and a full ledger table with
-  previous/new balances, reference links and notes.
-- `/inventory/reservations` — reservation list with status filters, and
-  release/consume/expire actions.
-
-### Permissions (Inventory)
-
-`inventory.view`, `inventory.manage` (legacy), `inventory.read`,
-`inventory.create`, `inventory.update`, `inventory.adjust`,
-`inventory.transfer`, `inventory.reserve`, `inventory.release_reservation`,
-`inventory.receive_goods`, `inventory.view_ledger`, `inventory.delete`.
-The seeded Manager role carries the inventory permissions; Admin uses `*`.
-
-### Database — Inventory Ledger
-
-New Prisma models: `StockMovement` (enhanced with `referenceNumber`,
-`previousQuantity`, `newQuantity`, `notes`, `invoiceId`), `StockReservation`,
-`StockAdjustment`; new back-relations on Organization, Product, Warehouse,
-User and Invoice. Indexes cover organization/product/warehouse/movement-type,
-organization/creation date, reservation status/reference and adjustment type.
-
-Migration `20261126113000_inventory_stock_ledger_and_reservations` creates the
-tables/indexes and backfills one `OPENING_STOCK` movement per existing
-`StockItem` balance (skipping zero quantities), so historical balances remain
-preserved and traceable.
-
-## Purchase Order & Goods Received Note (GRN) Workflow
-
-The Sales & Purchase module implements a real procurement workflow. Creating a
-Purchase Order does **not** change inventory; goods enter stock only through
-valid Goods Received Notes (GRNs) recorded against approved orders.
-
-### Purchase Order Lifecycle
-
-Persisted statuses: `DRAFT`, `PENDING_APPROVAL`, `APPROVED`, `SENT`,
-`PARTIALLY_RECEIVED`, `RECEIVED`, `REJECTED`, `CANCELLED`.
-
-Valid transitions (server-enforced):
+Statuses: `TRIALING`, `ACTIVE`, `PAST_DUE`, `GRACE_PERIOD`, `SUSPENDED`, `CANCELLED`, `EXPIRED`. `assertValidTransition()` rejects illegal transitions such as reactivating an expired subscription. Payment status is stored separately from subscription status.
 
 ```mermaid
 stateDiagram-v2
-    [*] --> DRAFT
-    DRAFT --> PENDING_APPROVAL
-    DRAFT --> CANCELLED
-    PENDING_APPROVAL --> APPROVED
-    PENDING_APPROVAL --> REJECTED
-    PENDING_APPROVAL --> DRAFT
-    PENDING_APPROVAL --> CANCELLED
-    APPROVED --> SENT
-    APPROVED --> PARTIALLY_RECEIVED
-    APPROVED --> RECEIVED
-    APPROVED --> CANCELLED
-    SENT --> PARTIALLY_RECEIVED
-    SENT --> RECEIVED
-    SENT --> CANCELLED
-    PARTIALLY_RECEIVED --> PARTIALLY_RECEIVED
-    PARTIALLY_RECEIVED --> RECEIVED
+  [*] --> TRIALING: signup
+  TRIALING --> ACTIVE: verified payment
+  TRIALING --> EXPIRED: trial ends
+  ACTIVE --> GRACE_PERIOD: payment failed
+  ACTIVE --> SUSPENDED: platform policy
+  GRACE_PERIOD --> ACTIVE: recovery
+  GRACE_PERIOD --> SUSPENDED: grace ends
+  SUSPENDED --> ACTIVE: admin reactivation
+  ACTIVE --> CANCELLED: cancellation
+  CANCELLED --> EXPIRED: term ends
 ```
 
-Server actions (`src/modules/sales_purchase/actions.ts`) and service functions
-(`src/modules/sales_purchase/service.ts`):
+## 11. Default plans
 
-- `createPurchaseOrderAction` / `createPurchaseOrder` — creates the PO in
-  `DRAFT` with a unique PO number, supplier, warehouse, expected delivery date,
-  and items. Stock and accounting are untouched.
-- `submitPurchaseOrderForApprovalAction` — `DRAFT` → `PENDING_APPROVAL`.
-- `approvePurchaseOrderAction` — `PENDING_APPROVAL` → `APPROVED`; records who
-  approved (`PurchaseOrderApproval` row + `PurchaseOrder.approvedById/approvedAt`).
-- `rejectPurchaseOrderAction` — `PENDING_APPROVAL` → `REJECTED` with a recorded
-  reason. Rejection is terminal.
-- `sendPurchaseOrderAction` — `APPROVED` → `SENT`.
-- `cancelPurchaseOrderAction` — from `DRAFT`, `PENDING_APPROVAL`, `APPROVED`,
-  `SENT` or `PARTIALLY_RECEIVED`; records a cancellation reason.
-- `createGoodsReceiptAction` / `createGoodsReceipt` — the receipt workflow below.
-- `getPurchaseOrderRemainingQuantities(organizationId, purchaseOrderId?)` —
-  computed per-item: `Remaining = Ordered Quantity − Previously Accepted Quantity`.
-- `getGoodsReceipts(organizationId)` / `getGoodsReceiptById(organizationId, id)` /
-  `getStockMovementsForGoodsReceipt(...)` — receipt reads.
+Seeded idempotently: **Starter** (990 BDT/mo), **Business** (2,990 BDT/mo), **Professional** (7,990 BDT/mo, recommended) and **Enterprise** (custom/negotiated, negotiated price stored as 0 with unlimited limits). Plans are editable at `/platform-admin/plans`. Existing organizations are given an active Enterprise subscription by the seed; no existing data is deleted.
 
-### Goods Received Note (GRN)
+## 12. Plan entitlements
 
-A GRN records the physical goods received from a supplier.
+`src/core/billing/entitlements.ts` exposes `getOrganizationEntitlements()`, `canAccessModule()` and `getBillingOverview()`. A module is accessible only if it is included in the plan or separately purchased **and** enabled on `OrganizationModule`. `requireModuleAccess()` and `assertActionAccess()` enforce this on the server for pages and actions.
 
-- A GRN is only valid when the PO is in `APPROVED`, `SENT` or
-  `PARTIALLY_RECEIVED`.
-- Per PO item, `Remaining = orderedQuantity − previouslyReceived`. Receipt
-  lines cannot exceed the remaining quantity (no over-receipt by default).
-- Each line validates `receivedQuantity = acceptedQuantity + rejectedQuantity`.
-- Accepted quantities increase `StockItem` and create `StockMovement` rows with
-  movement type `PURCHASE_RECEIPT`. Rejected quantities never touch stock.
-- `previouslyReceived` on the PO item is updated by accepted quantities, so
-  repeated partial receipts accumulate until
-  `previouslyReceived >= orderedQuantity`, at which point the PO becomes
-  `RECEIVED` (with `receivedDate` set).
-- All GRN operations run inside a `$transaction`. A `SELECT … FOR UPDATE` lock on
-  the Purchase Order row serializes concurrent receipts, so two simultaneous
-  receipts cannot both consume the same remaining quantity.
-- Retry safety: `GoodsReceipt.idempotencyKey` (unique per organization) returns
-  the existing receipt on resubmission and never duplicates stock. The
-  `StockMovement` table has a unique `[goodsReceiptId, productId, warehouseId]`
-  index.
-- Account trail: when the accounting module is enabled, GRN creation creates an
-  `EXPENSE` / `Inventory Purchase` transaction referencing the GRN. Purchase
-  order creation, approval and sending never create accounting entries; supplier
-  invoices and payments are separate events.
+## 13. Trial management
 
-### Purchase Order UI
+Registration starts one free trial from the Starter plan (trial duration read from the plan). `SubscriptionHistory` prevents a second trial for the same organization. Platform admins can extend a trial; expiry is processed by the billing cron. Expiration never deletes data — it expires the subscription and restricts access.
 
-- `/sales-purchase/purchases` — PO list with search, status filters, order/expected
-  date range filters and pagination. Columns: PO #, Supplier, Warehouse, Order
-  Date, Expected Delivery, Total, Received Qty, Received Amount, Remaining,
-  Status, Created By/At, Actions.
-- `/sales-purchase/purchases/[id]` — PO details: supplier, warehouse, order items
-  (ordered, previously received, remaining, unit cost, totals), approval
-  history, receipt history and an activity timeline. Actions per status and
-  permission: Edit Draft, Submit for Approval, Approve, Reject, Send to
-  Supplier, Cancel, and a Create GRN form.
-- `/sales-purchase/receipts` and `/sales-purchase/receipts/[id]` — GRN list and
-  details (items table with ordered/previously received/remaining/received/
-  accepted/rejected/unit cost, plus related stock movements).
+## 14. Monthly and yearly billing
 
-### Purchase Order and Inventory Integration
+`addMonthsClamped()` and `addYearsClamped()` handle month-end dates and leap years (31 Jan → 28/29 Feb, 29 Feb → 28 Feb). Currency defaults to BDT, is configurable per plan, and is stored on invoices with `Decimal(14,2)`. Tax is stored per invoice.
 
-- PO creation, approval and sending do not change `StockItem` or create
-  `StockMovement` rows.
-- Only accepted quantities from valid GRNs increase `StockItem`.
-- `StockItem.quantity` and the `StockMovement` ledger are updated in the same
-  transaction, so they stay consistent.
+## 15. Upgrade and downgrade
 
-### Audit Trail
+Upgrade records a `ScheduledPlanChange` with status `AWAITING_PAYMENT`, a pending invoice and history; entitlements activate only after authoritative payment approval. Downgrade checks current usage and enabled modules against the target plan, explains conflicts, and schedules the change for the current billing boundary by default. Policy defaults: no automatic proration, no automatic refunds (credit/adjustment only) — both configurable in platform settings. No business data is deleted on downgrade.
 
-`SecurityAuditLog` rows record: `PO_CREATED`, `PO_UPDATED`,
-`PO_SUBMITTED_FOR_APPROVAL`, `PO_APPROVED`, `PO_REJECTED`, `PO_SENT`,
-`PO_CANCELLED`, `PO_PARTIALLY_RECEIVED`, `PO_RECEIVED`, `GRN_CREATED` —
-with actor, organization, timestamp, entity and before/after data.
+## 16. Module-based pricing
 
-### Permissions (Sales & Purchase)
+`PlanModule` stores included/paid status and separate monthly/yearly prices. `purchaseModule()` activates a paid module and the matching `OrganizationModule`, and records a module purchase event in the audit log.
 
-- `sales_purchase.po.view` — view Purchase Orders
-- `sales_purchase.po.create` — create Purchase Orders
-- `sales_purchase.po.edit` — edit DRAFT Purchase Orders
-- `sales_purchase.po.submit` — submit for approval
-- `sales_purchase.po.approve` — approve
-- `sales_purchase.po.reject` — reject
-- `sales_purchase.po.send` — send to supplier
-- `sales_purchase.po.cancel` — cancel
-- `sales_purchase.grn.view` — view GRNs / receipt history
-- `sales_purchase.grn.create` — create GRNs
-- Legacy `sales_purchase.view` and `sales_purchase.manage` remain accepted
-  (backward compatibility).
-- The **Manager** role is seeded with the PO and GRN permissions; **Admin**
-  receives all permissions via `*`.
+## 17. Usage metering
 
-### Database Migration & Legacy Data
+Categories: `EMPLOYEES`, `USERS`, `PROJECTS`, `STORAGE_MB`, `API_CALLS`, `INVOICES`, `WAREHOUSES`. `getOrganizationUsage()` combines live record counts with metered `UsageRecord` rows. `incrementUsage()` uses `INSERT … ON CONFLICT DO UPDATE` so concurrent consumption cannot lose an increment. `checkUsageLimit()`/`assertUsageLimit()` are called server-side when creating employees, users and projects. Storage/API/invoice/warehouse counters are ready for callers to meter.
 
-New migrations in `prisma/migrations/`:
+## 18. Invoice management
 
-- `20261126100000_purchase_order_grn_workflow` — adds `GoodsReceipt`,
-  `GoodsReceiptItem`, `StockMovement`, `PurchaseOrderApproval` tables; adds
-  workflow columns to `PurchaseOrder` and `PurchaseOrderItem` (renaming legacy
-  `quantity` → `orderedQuantity`, adding `previouslyReceived`, `expectedDate`,
-  `receivedDate`, `warehouseId`, `legacyReceivedAt`, etc.). Backfills
-  `PurchaseOrder.warehouseId` from the organization's first warehouse.
-- `20261126100100_purchase_order_created_by` — adds `PurchaseOrder.createdById`.
-- `20261126113000_inventory_stock_ledger_and_reservations` — adds the
-  `StockReservation` and `StockAdjustment` tables, enhances `StockMovement`
-  (`referenceNumber`, `previousQuantity`, `newQuantity`, `notes`, `invoiceId`),
-  indexes, and creates `OPENING_STOCK` movements for existing stock balances.
+`BillingInvoice` + `BillingInvoiceItem` store line items, discounts, tax rate/amount, totals, currency, issue/due/paid dates and status (`DRAFT`, `PENDING`, `PARTIALLY_PAID`, `PAID`, `OVERDUE`, `VOID`, `REFUNDED`). Finalization makes amounts immutable; corrections require void/adjustment records. PDF download is at `/api/billing/invoices/{id}/pdf` and is tenant-scoped.
 
-Legacy handling: Purchase Orders that existed with status `RECEIVED` before this
-workflow were marked with `legacyReceivedAt` and are treated as terminal, without
-fabricated receipt history or stock movements. Their stock was already reflected
-in existing `StockItem` values when they were created.
+## 19. Payment architecture
 
-Upgrade:
+`PaymentProvider` abstracts `createSession`, `verify`, `parseWebhook` and optional `refund`. `initiatePayment()` validates the outstanding amount, enforces an idempotency key, and stores provider references. `verifyAndSettlePayment()` runs inside a transaction: verifies the provider (or requires explicit platform approval for manual bank transfer), settles the invoice, records attempts/audit, and restores entitlements only after settlement. Duplicate idempotency keys and duplicate webhook event ids are rejected.
 
-```bash
-npx prisma validate
-npx prisma generate
-npx prisma migrate deploy
-npx prisma migrate status
+## 20. Supported payment providers — actual status
+
+| Provider             | Status                                                                                                                                                          |
+| -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Manual bank transfer | **Implemented and tested** — requires explicit platform approval; never auto-settles.                                                                           |
+| SSLCommerz           | **Adapter implemented, unverified** — hosted checkout + validation calls are coded against documented endpoints but require real sandbox credentials to verify. |
+| bKash                | **Adapter only** — refuses checkout until gateway callback contract is implemented and credentials verified.                                                    |
+| Nagad                | **Adapter only** — same limitation.                                                                                                                             |
+
+No provider is claimed as production-integrated without credentials and verification.
+
+## 21. Bangladesh gateway configuration
+
+Set `SSLCOMMERZ_STORE_ID`, `SSLCOMMERZ_STORE_PASSWORD`, `SSLCOMMERZ_ENVIRONMENT=SANDBOX|LIVE`, `SSLCOMMERZ_WEBHOOK_SECRET` and `BILLING_SUPPORT_EMAIL`. `NEXTAUTH_URL` must be publicly reachable for callbacks. Use `/platform-admin/gateways` for non-secret public configuration; secrets stay in the environment.
+
+## 22. Payment webhook setup
+
+Point SSLCommerz IPN at `{NEXTAUTH_URL}/api/billing/webhooks/sslcommerz`. The endpoint reads the raw body, verifies an HMAC-SHA256 signature, deduplicates on `eventId`, validates amount/currency/merchant reference against the stored payment, settles on `PAID`, and records failure state otherwise. Unsigned or unconfigured webhooks return 401/503 and are never trusted.
+
+## 23. Renewal and scheduled jobs
+
+`/api/cron/billing` requires `Authorization: Bearer $CRON_SECRET` and runs `runBillingJobs()`: trial expiry, grace expiry, scheduled downgrades, renewal invoice generation, overdue detection and audit logging. Example:
+
+```cron
+*/15 * * * * curl -X POST -H "Authorization: Bearer $CRON_SECRET" https://your-host/api/cron/billing
+*/5  * * * * curl -X POST -H "Authorization: Bearer $CRON_SECRET" https://your-host/api/cron/notifications
 ```
 
-Do not apply migrations to the database without a backup and migration plan
-review (see `Existing Database Upgrade` above).
+Operations are idempotent via status/date guards and unique keys. `BILLING_AUTO_CHARGE_PROVIDER` is opt-in; only a verified SSLCommerz configuration may attempt unattended charging. Manual/bKash/Nagad invoices remain pending until approved or verified.
 
-### Testing
+## 24. Environment variables
 
-```bash
-npm test
-```
+See `.env.example`. Required: `DATABASE_URL`, `AUTH_SECRET`, `NEXTAUTH_URL`. Platform: `PLATFORM_ADMIN_*`, `CRON_SECRET`. Billing: `BILLING_GRACE_DAYS`, `BILLING_SUPPORT_EMAIL`, optional `BILLING_AUTO_CHARGE_PROVIDER`, SSLCommerz/bKash/Nagad credentials. Also: rate-limit, Redis, notification and backup variables. Secrets are never committed.
 
-Includes:
-
-- Purchase Order status lifecycle unit tests (`src/modules/sales_purchase/po-status.test.ts`)
-- Purchase Order + GRN database integration tests (`src/modules/sales_purchase/grn.service.test.ts`),
-  run against the development database and cleaning up their test organization after each test.
-  Coverage includes: PO creation does not change stock, full receipt updates stock,
-  partial receipts, rejected goods, over-receipt rejection, duplicate GRN handling,
-  cross-tenant rejection, and concurrent-receipt safety.
-- Inventory ledger integration tests (`src/modules/inventory/stock-ledger.test.ts`):
-  stock in/out movements with previous/new balances, adjustments, linked transfer
-  movements, insufficient stock rejection and ledger/stock consistency.
-- Reservation tests (`src/modules/inventory/stock-reservation.test.ts`):
-  reserve, over-reservation rejection, release, consume once, expiration and
-  concurrent reservation safety.
-- Concurrency tests (`src/modules/inventory/stock-concurrency.test.ts`): two
-  simultaneous sales (7 + 6 against 10 available) never oversell; sales respect
-  reservations and consume them exactly once.
-- Sales/inventory integration tests
-  (`src/modules/sales_purchase/invoice-inventory-integration.test.ts`): draft
-  invoice does not deduct stock, posting deducts once with ledger entries,
-  insufficient stock fails, repeated posting blocked, cancellation creates
-  compensating `SALES_RETURN` entries, cross-tenant rejection.
-- Existing invoice and permissions tests (`src/modules/sales_purchase/workflow.test.ts`,
-  `src/lib/permissions.test.ts`).
-
-All integration and concurrency tests use real PostgreSQL transactions via the
-development database (`DATABASE_URL`) and create/remove their own tenant data.
-
-### Authorization Tests
-
-Run the permission evaluation and delegation tests with:
-```bash
-npm test
-```
-
----
-
-# Enterprise Core Infrastructure (Systems A–E)
-
-This project now includes five cross-cutting enterprise systems that are shared by all nine business modules. They are implemented in `src/core/**`, exposed through Server Actions under the dashboard routes, and persisted through forward-only Prisma migrations in `prisma/migrations`.
-
-## A. Security, Audit & Sessions
-
-- **DB-authoritative RBAC.** `src/lib/permissions.ts` is the single permission evaluator; `src/core/auth/authorization.ts` provides `requireActionPermission`, `requireAnyActionPermission`, `can`, and `canAny` for Server Actions/API routes. `organizationId` is always taken from the server-side session (`src/core/auth/session.ts`), never from client payloads. `src/core/tenant/index.ts` supplies `tenantWhere`, `assertOrganizationMatch`, and `requireTenantRecord` helpers.
-- **Enforceable sessions.** NextAuth signs a `jti` (`sessionTokenId`) into the JWT and creates a `UserSession` row at sign-in. The `jwt` callback calls `validateSessionToken` on every request; revoked, expired, or missing sessions are rejected even while the JWT is cryptographically valid. `revokeSessionById`, `revokeUserSessions`, and `revokeSessionByToken` are used for admin revocation, role changes, and logout. Admin session revocation is available at `/settings/security`.
-- **Audit trail.** `src/core/audit/index.ts` writes structured `AuditLog` records with actor, action, resource, old/new values, request metadata, IP, user agent and correlation id. `sanitizeAuditPayload` recursively redacts passwords, tokens, secrets, cookies, and credentials. Login events are written to `LoginHistory` with `SUCCESS`, `FAILED`, `BLOCKED`, and `LOGOUT` statuses. The legacy `SecurityAuditLog` remains intact for existing module code and is written alongside the new audit service where relevant.
-- **Rate limiting.** `src/core/security/rate-limit.ts` uses Upstash Redis REST when `UPSTASH_REDIS_REST_URL`/`UPSTASH_REDIS_REST_TOKEN` are set, and otherwise uses the `RateLimitBucket` PostgreSQL table with a fixed window. There is no in-memory-only production limiter. Sign-in is limited per IP and per email, configurable via `LOGIN_RATE_LIMIT_*`.
-- **Retention.** `DataRetentionPolicy` and `RetentionRun` implement per-tenant retention with a legal hold that skips a data type entirely. Policies are managed at `/settings/data-management`.
-
-Route: `/settings/security` (requires `audit.view`, `login_history.view`, or `sessions.manage` for individual sections).
-
-## B. Workflow & Approval Engine
-
-- Reusable, configurable workflows (`ApprovalWorkflow`, `ApprovalWorkflowStep`) with sequential and parallel modes, `minApprovals` committees, fallback approvers, optional per-step conditions, and SLA due hours.
-- Requests snapshot the workflow version and steps (`ApprovalRequest`, `ApprovalRequestStep`) so changing a workflow never rewrites history. A full action history (`ApprovalAction`) records submission, approvals, rejections, delegation, cancellation, resubmission and completion.
-- Conditions are **structured JSON only** (`eq`, `neq`, `gt`, `gte`, `lt`, `lte`, `in`, `not_in`, `contains`, `exists` with `all`/`any`/`not` trees). `src/core/workflows/conditions.ts` validates field names and never evaluates JavaScript.
-- Delegation is time-bounded and optionally module-scoped (`ApprovalDelegation`), and is checked by the approver resolver.
-- Rejection requires a reason. Final decisions apply the business state change through `src/core/workflows/adapters.ts` **inside the same serializable transaction** as the approval action. Existing PO transitions are duplicated into `PurchaseOrderApproval` for backward compatibility.
-- Built-in adapters: `LEAVE_REQUEST`, `PAYROLL_RUN`, `PURCHASE_ORDER`, `PROJECT_EXPENSE`, `STOCK_ADJUSTMENT`, `SALES_INVOICE` (reject cancels a draft invoice).
-- Editing a workflow that already has requests publishes a new version instead of mutating in-flight history.
-
-Routes: `/workflows` (configuration + delegation), `/approvals` and `/approvals/[id]` (decisions, history, resubmit).
-
-**Module integrations:** leave requests start an approval workflow atomically and notify the requester; Purchase Order submission starts a workflow and the direct approve/reject endpoints refuse to bypass a pending workflow; stock adjustments and invoice issue emit notifications; invoice due dates create durable reminder jobs.
-
-## C. Notifications
-
-- Multi-channel delivery: in-app (`Notification`), email and SMS (`NotificationDelivery`). Providers are `resend` (email) and `twilio` (SMS) via plain `fetch`; no new runtime dependencies were added. When a provider is unconfigured, the delivery row becomes `SKIPPED` with an explicit error — the UI never reports successful delivery.
-- Per-user, per-category preferences (`NotificationPreference`) with a mandatory in-app security channel when the organization enforces security notifications.
-- Failed deliveries retry with exponential backoff up to five attempts, then become `FAILED`.
-- Durable scheduled reminders (`NotificationJob`) use a unique `dedupeKey` so repeated scheduling never duplicates messages. `src/core/notifications/scheduler.ts` enqueues approval-due, invoice-overdue, low-stock and task-deadline reminders.
-- Background work runs through the authenticated `POST/GET /api/cron/notifications` endpoint. It also processes pending deliveries, purges expired exports and stale sessions, and cleans up old jobs. **Configure `CRON_SECRET`**; without it the endpoint returns 503. Example crontab: `*/5 * * * * curl -X POST -H "Authorization: Bearer $CRON_SECRET" https://your-host/api/cron/notifications`.
-
-Route: `/notifications` (inbox, preferences, provider status, delivery diagnostics, test buttons).
-
-## D. System Settings
-
-- `OrganizationSettings` adds currency code/symbol/decimal precision/display format, IANA timezone, date format, 12H/24H time format, fiscal-year start, week start and security-notification enforcement. Values are validated with `Intl` (`assertValidOrganizationSettings`).
-- Company profile fields on `Organization`: address, phone, email, website, tax id and registration number.
-- `TaxConfiguration` supports VAT/sales/income/withholding/other with inclusive/exclusive rates and effective date ranges.
-- `FiscalYear` supports open/current/closed states with an explicit reopen action and audit history.
-- `DocumentSequence` plus `src/core/settings/document-numbering.ts` allocates numbers with a single atomic `UPDATE … RETURNING` inside the caller's transaction. `INSERT … ON CONFLICT DO NOTHING` initialises sequences safely under concurrency. PO and invoice creation now use these sequences instead of random numbers.
-
-Route: `/settings`.
-
-## E. Data Management
-
-- **Import:** CSV and XLSX parsing with strict limits (10 MB, 5,000 rows, 100 columns, 2,000 chars/cell). `src/core/data/csv.ts` handles quoted CSV; `src/core/data/xlsx.ts` is a minimal ZIP/XML reader built on `zlib` (shared strings, inline strings, numbers, booleans; formulas/macros are never executed). Preview validates with the same row validators inside a deliberately rolled-back transaction. Execution is atomic per job and records per-row errors in `ImportJob`. Definitions: employees, customers, suppliers, products, leads, projects.
-- **Export:** real CSV, OOXML `.xlsx` (dependency-free ZIP writer with checksums and inline strings) and PDF (existing `buildPdfDocument`). Exports are generated into `storage/exports`, protected by a random download token bound to organization and creator, and expire after 24 hours. CSV/XLSX cells beginning with `= + - @` are prefixed with `'` to prevent formula injection.
-- **Backup/restore:** operator-only logical `pg_dump` backups with SHA-256 checksum verification, retention cleanup, and a documented `pg_restore` CLI procedure. `BACKUP_OPERATOR_EMAILS` must be configured; there is intentionally no org-admin restore button.
-- **Archive:** customers, leads, products and employees can be archived/restored with a JSON snapshot and full reversibility.
-- **Retention:** tenant policies for audit logs, login history, notification history, session history and import/export artifacts, with DELETE/ANONYMIZE actions, legal hold, and an audited run history.
-
-Route: `/settings/data-management`.
-
-## Permissions Added
-
-`audit.export`, `settings.view`, `settings.security.manage`, `sessions.manage`, `login_history.view`, `workflow.view`, `workflow.manage`, `workflow.approve`, `workflow.delegate`, `notifications.view`, `notifications.preferences.manage`, `data.import`, `data.export`, `data.backup.manage`, `data.archive.manage`, `data.retention.manage`. Admin keeps `*`; Manager and Employee defaults were updated in `src/core/types/index.ts`. Existing role permission rows in the database are authoritative and are **not** reset by the seed.
-
-## Environment Variables
-
-See `.env.example`. New optional settings: `LOGIN_RATE_LIMIT_*`, `UPSTASH_REDIS_REST_*`, `CRON_SECRET`, `EMAIL_PROVIDER`/`RESEND_*`, `SMS_PROVIDER`/`TWILIO_*`, `BACKUP_OPERATOR_EMAILS`, `BACKUP_SCHEDULE`, `BACKUP_RETENTION_DAYS`.
-
-## Migrations
-
-Two forward-only migrations exist:
-
-1. `00000000000000_baseline` — the original committed schema, for databases created with `prisma db push`. Mark it applied with `npx prisma migrate resolve --applied 00000000000000_baseline` **before** running `migrate deploy`.
-2. `20261128000000_enterprise_core_infrastructure` — audit/session/rate-limit/workflow/notification/settings/data-management tables, resubmission attempts, SLA columns and company-profile columns.
-
-The baseline was generated from the original committed schema and the incremental migration from the original schema to the current one, so a fresh `migrate deploy` and an upgrade from the legacy schema both converge on the same result. This was verified against a temporary empty database. No destructive migration or database reset is used. Always back up before upgrading an existing database.
-
-## Verification
-
-The following were run against this working tree:
+## 25. Local installation
 
 ```bash
-npx prisma validate
-npx prisma generate
+npm install
+cp .env.example .env          # fill in DATABASE_URL and AUTH_SECRET
 npx prisma migrate deploy
 npm run db:seed
-npx tsc --noEmit
-npm run lint
-npm test            # 69 tests passing
-npm run build
+npm run dev
 ```
 
-`src/core/enterprise.test.ts` adds 12 tests covering condition safety, audit redaction, rate limiting, session revocation, audit search, concurrent document numbering, sequential workflows with delegation, rejection reasons and business-state updates, import preview rollback/execute, legal-hold retention, and archive/restore.
+Organization demo login: `admin@demo-corp.com` / `Admin@123`. Platform login: `/platform-admin/login` with the credentials set via `PLATFORM_ADMIN_*`.
 
-## Deliberate Limitations
+## 26. Prisma migrations
 
-- **Row-level security is not enabled.** PostgreSQL RLS would require rewriting every existing query to set a session context; tenant isolation is instead enforced in application code at every server action and query boundary. This is documented rather than silently enabled.
-- **File artifacts are stored on the local filesystem** (`storage/exports`, `storage/backups`). On a multi-instance deployment, use shared object storage and point `storagePath` at it; downloads are already token- and tenant-checked.
-- **Full restore is an operator CLI procedure**, not a dashboard action, because restoring over a live tenant is destructive.
-- **Payroll-run and project-expense workflow adapters are implemented** but those two modules do not yet expose a submission endpoint that starts a workflow; their direct approval paths remain unchanged. The engine and adapters are ready for that integration.
-- **Redis is an optional adapter** via Upstash REST; no local Redis server or additional npm dependency is required.
-- **Cron must be wired externally** with `CRON_SECRET`; reminders are durable in the database but the platform scheduler is deployment-specific.
+1. `00000000000000_baseline` — original committed schema for legacy `db push` databases (`prisma migrate resolve --applied` first).
+2. `20261128000000_enterprise_core_infrastructure` — audit/session/workflow/notification/settings/data-management.
+3. `20261128030000_saas_subscription_billing` — plans, subscriptions, entitlements, usage, invoices, payments, webhooks, platform identity and settings.
+
+Forward-only, no resets. Verified on an empty temporary database and on the existing development database.
+
+## 27. Database seeding
+
+`npm run db:seed` creates missing system roles, sample org data, four plans with module entitlements, an active subscription for existing organizations, and optionally the platform administrator from environment variables. It never resets existing permissions or deletes records. Re-running is safe.
+
+## 28. Development commands
+
+`npm run dev`, `npm run build`, `npm run lint`, `npm test`, `npx tsc --noEmit`, `npx prisma validate`, `npx prisma generate`, `npx prisma migrate deploy`, `npx prisma migrate status`, `npm run billing:jobs` (one-off local billing job run).
+
+## 29. Production deployment
+
+Run `prisma migrate deploy` before starting the app, configure all secrets via the environment, seed the platform administrator, schedule both cron endpoints, and use shared storage for exports/backups on multi-instance deployments. Always back up before migration.
+
+## 30. Security considerations
+
+Dedicated platform identity; DB-authoritative RBAC; server-side price/entitlement validation; tenant-scoped queries; Zod validation on webhooks/APIs; provider signature verification; idempotency keys; rate limits on both login providers; transactional financial updates; redacted audit logs; no secrets in source, seed or UI.
+
+## 31. Testing
+
+`npm test` runs 80 tests including the original module tests, 12 enterprise infrastructure tests and 11 billing tests covering platform identity separation, date math, transition validation, trials, single-trial prevention, paid activation gate, module entitlements, concurrent quota increments, downgrade conflicts, invoice arithmetic, finalization, idempotent manual payments, webhook dedupe, grace/recovery and MRR calculations. Integration tests use real PostgreSQL and clean up their own tenants.
+
+## 32. Demo credentials
+
+- Organization: `admin@demo-corp.com` / `Admin@123`
+- Platform Super Admin: `platform@example.com` / `Platform@123` when `PLATFORM_ADMIN_EMAIL`/`PLATFORM_ADMIN_PASSWORD` are configured as in `.env.example` and `.env`.
+- If both platform variables are unset in development, seed creates a local-only demo `platform@demo.local` / `Platform@123`. In production no default account is created — you must configure the environment variables.
+
+Platform passwords must be at least 12 characters; shorter values are rejected with a clear seed message. Organization credentials never work at `/platform-admin/login`, and platform credentials never grant tenant access.
+
+## 33. Known limitations
+
+- bKash/Nagad are adapters only; SSLCommerz is coded but not verified without credentials.
+- Automatic recurring charge is opt-in and limited to verified SSLCommerz; other invoices require approval/verification.
+- Storage/API/invoice/warehouse usage counters need explicit calls from upload/API paths.
+- RLS is not enabled; tenant isolation is application-level.
+- Local filesystem is used for export/backup artifacts.
+- Payment refunds are not automated; credit/adjustment workflow is documented policy only.
+
+## 34. Future roadmap
+
+Complete bKash/Nagad checkout contracts, add automated refund/credit notes, proration engine, object-storage artifacts, RLS evaluation, usage-based overage billing, and a platform audit viewer.

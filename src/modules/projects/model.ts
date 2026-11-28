@@ -1,4 +1,5 @@
 import { prisma } from '@/core/db/prisma';
+import { assertUsageLimit } from '@/core/billing/usage';
 import type {
   CreateProjectInput,
   CreateProjectTaskInput,
@@ -6,6 +7,7 @@ import type {
 } from '@/core/types';
 
 export async function createProject(input: CreateProjectInput) {
+  await assertUsageLimit(input.organizationId, 'PROJECTS');
   if (input.customerId) {
     const customer = await prisma.customer.findFirst({
       where: {

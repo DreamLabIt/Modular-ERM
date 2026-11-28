@@ -1,6 +1,7 @@
 'use server';
 
 import { revalidatePath } from 'next/cache';
+import { redirect } from 'next/navigation';
 import { requireModuleAccess } from '@/core/auth/module-guard';
 import { createEmployee, createLeaveRequest, markAttendance, updateLeaveStatus } from './model';
 
@@ -14,14 +15,19 @@ export async function createEmployeeAction(formData: FormData) {
 
   if (!employeeCode || !fullName) return;
 
-  await createEmployee({
-    organizationId: tenant.organizationId,
-    employeeCode,
-    fullName,
-    designation,
-    department,
-    basicSalary,
-  });
+  try {
+    await createEmployee({
+      organizationId: tenant.organizationId,
+      employeeCode,
+      fullName,
+      designation,
+      department,
+      basicSalary,
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Employee could not be created.';
+    redirect(`/hrm/employees?error=${encodeURIComponent(message)}`);
+  }
   revalidatePath('/hrm/employees');
   revalidatePath('/projects');
   revalidatePath('/dashboard');

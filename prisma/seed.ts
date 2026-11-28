@@ -332,11 +332,207 @@ async function main() {
   for (const policy of defaultRetention) {
     await prisma.dataRetentionPolicy.upsert({
       where: {
-        organizationId_dataType: { organizationId: org.id, dataType: policy.dataType },
+        organizationId_dataType: {
+          organizationId: org.id,
+          dataType: policy.dataType,
+        },
       },
       update: {},
       create: { organizationId: org.id, ...policy, isActive: false },
     });
+  }
+
+  // ── SaaS subscription & billing defaults ────────────────────────────────
+  const allModuleKeys = [
+    "hrm",
+    "payroll",
+    "crm",
+    "projects",
+    "accounting",
+    "inventory",
+    "sales",
+    "sales_purchase",
+    "reports",
+    "users_roles",
+  ];
+  const defaultPlans = [
+    {
+      slug: "starter",
+      name: "Starter",
+      description: "For small businesses getting started.",
+      monthly: 990,
+      yearly: 9900,
+      trialDays: 14,
+      sortOrder: 1,
+      limits: {
+        maxEmployees: 10,
+        maxUsers: 5,
+        maxProjects: 5,
+        maxStorageMb: 1000,
+        maxApiCalls: 10000,
+      },
+      modules: ["hrm", "inventory", "sales_purchase", "reports", "users_roles"],
+      recommended: false,
+    },
+    {
+      slug: "business",
+      name: "Business",
+      description: "For growing teams and broader operations.",
+      monthly: 2990,
+      yearly: 29900,
+      trialDays: 14,
+      sortOrder: 2,
+      limits: {
+        maxEmployees: 50,
+        maxUsers: 25,
+        maxProjects: 50,
+        maxStorageMb: 5000,
+        maxApiCalls: 100000,
+      },
+      modules: [
+        "hrm",
+        "payroll",
+        "crm",
+        "projects",
+        "accounting",
+        "inventory",
+        "sales",
+        "sales_purchase",
+        "reports",
+        "users_roles",
+      ],
+      recommended: false,
+    },
+    {
+      slug: "professional",
+      name: "Professional",
+      description: "Advanced operations with every module.",
+      monthly: 7990,
+      yearly: 79900,
+      trialDays: 14,
+      sortOrder: 3,
+      limits: {
+        maxEmployees: 200,
+        maxUsers: 100,
+        maxProjects: 200,
+        maxStorageMb: 20000,
+        maxApiCalls: 500000,
+      },
+      modules: allModuleKeys,
+      recommended: true,
+    },
+    {
+      slug: "enterprise",
+      name: "Enterprise",
+      description: "Custom configuration and negotiated pricing.",
+      monthly: 0,
+      yearly: 0,
+      trialDays: 30,
+      sortOrder: 4,
+      limits: {
+        maxEmployees: null,
+        maxUsers: null,
+        maxProjects: null,
+        maxStorageMb: null,
+        maxApiCalls: null,
+      },
+      modules: allModuleKeys,
+      recommended: false,
+    },
+  ];
+
+  for (const plan of defaultPlans) {
+    const row = await prisma.subscriptionPlan.upsert({
+      where: { slug: plan.slug },
+      update: {},
+      create: {
+        name: plan.name,
+        slug: plan.slug,
+        description: plan.description,
+        currency: "BDT",
+        monthlyPrice: plan.monthly,
+        yearlyPrice: plan.yearly,
+        trialDays: plan.trialDays,
+        allowedIntervals: "MONTHLY,YEARLY",
+        ...plan.limits,
+        isActive: true,
+        isPublic: true,
+        sortOrder: plan.sortOrder,
+        isRecommended: plan.recommended,
+      },
+    });
+    for (const moduleKey of allModuleKeys) {
+      await prisma.planModule.upsert({
+        where: { planId_moduleKey: { planId: row.id, moduleKey } },
+        update: {},
+        create: {
+          planId: row.id,
+          moduleKey,
+          isIncluded: plan.modules.includes(moduleKey),
+        },
+      });
+    }
+  }
+
+  // Existing organizations keep full access: seed an authoritative active
+  // subscription rather than deleting or resetting their data.
+  const enterprisePlan = await prisma.subscriptionPlan.findUniqueOrThrow({
+    where: { slug: "enterprise" },
+  });
+  const organizations = await prisma.organization.findMany({
+    select: { id: true, name: true },
+  });
+  for (const organization of organizations) {
+    const existing = await prisma.organizationSubscription.findUnique({
+      where: { organizationId: organization.id },
+    });
+    if (existing) continue;
+    const now = new Date();
+    const next = new Date(now.getFullYear() + 1, now.getMonth(), now.getDate());
+    await prisma.organizationSubscription.create({
+      data: {
+        organizationId: organization.id,
+        planId: enterprisePlan.id,
+        status: "ACTIVE",
+        billingInterval: "YEARLY",
+        startDate: now,
+        currentPeriodStart: now,
+        currentPeriodEnd: next,
+        nextBillingDate: next,
+        paymentStatus: "MANUAL_APPROVED",
+      },
+    });
+  }
+
+  // Platform Super Admin comes from environment configuration. In local
+  // development only, a documented demo account is created so the platform
+  // login works immediately after seeding. Production never gets a default
+  // credential and requires explicit environment configuration.
+  const isProduction = process.env.NODE_ENV === "production";
+  const configuredEmail = process.env.PLATFORM_ADMIN_EMAIL?.trim().toLowerCase();
+  const configuredPassword = process.env.PLATFORM_ADMIN_PASSWORD;
+  const useDemo = !isProduction && !configuredEmail && !configuredPassword;
+  const platformEmail = configuredEmail || (useDemo ? "platform@demo.local" : "");
+  const platformPassword = configuredPassword || (useDemo ? "Platform@123" : "");
+  const platformName =
+    process.env.PLATFORM_ADMIN_NAME?.trim() ||
+    (useDemo ? "Platform Super Admin (Demo)" : "Platform Super Admin");
+
+  if (platformEmail && platformPassword.length >= 12) {
+    const passwordHash = await bcrypt.hash(platformPassword, 12);
+    await prisma.platformAdmin.upsert({
+      where: { email: platformEmail },
+      update: { passwordHash, name: platformName, isActive: true },
+      create: { email: platformEmail, name: platformName, passwordHash },
+    });
+    console.log(`Platform Super Admin: ${platformEmail}`);
+    if (useDemo) console.log(`Demo platform password: ${platformPassword}`);
+  } else {
+    console.log(
+      platformEmail
+        ? "Platform Super Admin password must be at least 12 characters. Set PLATFORM_ADMIN_PASSWORD and re-run seed."
+        : "Platform Super Admin not created. Set PLATFORM_ADMIN_EMAIL and PLATFORM_ADMIN_PASSWORD (>=12 chars) and re-run seed.",
+    );
   }
 
   console.log("Seed completed! Login: admin@demo-corp.com / Admin@123");

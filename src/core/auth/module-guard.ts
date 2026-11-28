@@ -3,6 +3,7 @@ import { getRequiredTenantSession } from './session';
 import type { Permission, TenantSession } from '@/core/types';
 import { hasPermission } from '@/lib/permissions';
 import { AuthorizationError } from '@/core/errors';
+import { canAccessModule } from '@/core/billing/entitlements';
 
 export async function requirePermission(requiredPermission: Permission) {
   const tenant = await getRequiredTenantSession();
@@ -30,6 +31,10 @@ export async function requireModuleAccess(moduleKey: string, requiredPermission?
   if (!tenant.enabledModules.includes(moduleKey)) {
     redirect(`/upgrade?module=${moduleKey}`);
   }
+  // Plan entitlements are enforced on the server, not just in navigation.
+  if (!(await canAccessModule(tenant.organizationId, moduleKey))) {
+    redirect(`/dashboard/billing/plans?module=${moduleKey}&reason=entitlement`);
+  }
 
   return tenant;
 }
@@ -45,6 +50,9 @@ export async function assertActionAccess(
   const tenant = await getRequiredTenantSession();
   if (!tenant.enabledModules.includes(moduleKey)) {
     throw new AuthorizationError(`Module "${moduleKey}" is not enabled for your organization.`);
+  }
+  if (!(await canAccessModule(tenant.organizationId, moduleKey))) {
+    throw new AuthorizationError(`Your subscription does not include the "${moduleKey}" module.`);
   }
   if (requiredPermissions) {
     const list = Array.isArray(requiredPermissions) ? requiredPermissions : [requiredPermissions];

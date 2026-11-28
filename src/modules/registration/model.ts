@@ -1,5 +1,6 @@
 import { prisma } from '@/core/db/prisma';
 import { ROLE_PERMISSIONS, type RegisterOrganizationInput } from '@/core/types';
+import { startTrial } from '@/core/billing/subscriptions';
 
 export async function isEmailRegistered(email: string) {
   return Boolean(await prisma.user.findUnique({ where: { email } }));
@@ -58,10 +59,39 @@ export async function registerOrganization(input: RegisterOrganizationInput) {
 
     const modulesToEnable =
       input.selectedModules.length > 0 ? input.selectedModules : ['inventory', 'sales_purchase'];
-    for (const moduleKey of modulesToEnable) {
-      await tx.organizationModule.create({
-        data: { organizationId: org.id, moduleKey, isEnabled: true },
+    // Registration grants one free trial. The plan, price and trial duration
+    // are read from the database; client input cannot influence them.
+    const trialPlan =
+      (await tx.subscriptionPlan.findFirst({ where: { slug: 'starter', isActive: true } })) ??
+      (await tx.subscriptionPlan.findFirst({ where: { isActive: true, isPublic: true }, orderBy: { sortOrder: 'asc' } }));
+    if (trialPlan) {
+      await startTrial({
+        organizationId: org.id,
+        planId: trialPlan.id,
+        actorEmail: input.email,
+        db: tx,
       });
+      const included = await tx.planModule.findMany({
+        where: { planId: trialPlan.id, isIncluded: true },
+        select: { moduleKey: true },
+      });
+      const allowed = new Set(included.map((module) => module.moduleKey));
+      for (const moduleKey of modulesToEnable) {
+        if (allowed.has(moduleKey)) {
+          await tx.organizationModule.upsert({
+            where: { organizationId_moduleKey: { organizationId: org.id, moduleKey } },
+            update: { isEnabled: true },
+            create: { organizationId: org.id, moduleKey, isEnabled: true },
+          });
+        }
+      }
+    } else {
+      // Compatible fallback when no plans have been seeded yet.
+      for (const moduleKey of modulesToEnable) {
+        await tx.organizationModule.create({
+          data: { organizationId: org.id, moduleKey, isEnabled: true },
+        });
+      }
     }
 
     await tx.warehouse.create({

@@ -122,6 +122,14 @@ model Organization {
   retentionPolicies       DataRetentionPolicy[]
   retentionRuns           RetentionRun[]
   ApprovalAction          ApprovalAction[]
+  subscription            OrganizationSubscription?
+  billingProfile          BillingProfile?
+  subscriptionsHistory    SubscriptionHistory[]
+  scheduledPlanChanges    ScheduledPlanChange[]
+  billingInvoices         BillingInvoice[]
+  payments                Payment[]
+  paymentAttempts         PaymentAttempt[]
+  usageRecords            UsageRecord[]
 }
 
 model OrganizationModule {
@@ -2324,4 +2332,329 @@ model RetentionRun {
   createdBy    User?        @relation(fields: [createdById], references: [id], onDelete: SetNull)
 
   @@index([organizationId, createdAt])
+}
+
+// ============================================================================
+// SAAS SUBSCRIPTION, ENTITLEMENTS, BILLING & PAYMENTS
+// ============================================================================
+
+/// Platform-level identity. Deliberately independent from organization-scoped
+/// User/Role records: an organization ADMIN is never a Platform Super Admin.
+model PlatformAdmin {
+  id           String    @id @default(cuid())
+  email        String    @unique
+  name         String
+  passwordHash String
+  isActive     Boolean   @default(true)
+  lastLoginAt  DateTime?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+}
+
+model SubscriptionPlan {
+  id               String   @id @default(cuid())
+  name             String
+  slug             String   @unique
+  description      String?
+  currency         String   @default("BDT")
+  monthlyPrice     Decimal  @db.Decimal(14, 2)
+  yearlyPrice      Decimal  @db.Decimal(14, 2)
+  trialDays        Int      @default(14)
+  allowedIntervals String   @default("MONTHLY,YEARLY")
+  maxEmployees     Int?
+  maxUsers         Int?
+  maxProjects      Int?
+  maxStorageMb     Int?
+  maxApiCalls      Int?
+  isActive         Boolean  @default(true)
+  isPublic         Boolean  @default(true)
+  sortOrder        Int      @default(0)
+  isRecommended    Boolean  @default(false)
+  features         Json?
+  customConfig     Json?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  modules          PlanModule[]
+  subscriptions    OrganizationSubscription[]
+  history          SubscriptionHistory[]
+  scheduledChanges ScheduledPlanChange[]
+
+  @@index([isActive, isPublic, sortOrder])
+}
+
+model PlanModule {
+  id           String   @id @default(cuid())
+  planId       String
+  moduleKey    String
+  isIncluded   Boolean  @default(true)
+  monthlyPrice Decimal  @default(0) @db.Decimal(14, 2)
+  yearlyPrice  Decimal  @default(0) @db.Decimal(14, 2)
+  createdAt    DateTime @default(now())
+
+  plan SubscriptionPlan @relation(fields: [planId], references: [id], onDelete: Cascade)
+
+  @@unique([planId, moduleKey])
+}
+
+/// The single authoritative subscription for an organization. Historical
+/// changes live in SubscriptionHistory, never by overwriting prior records.
+model OrganizationSubscription {
+  id                  String    @id @default(cuid())
+  organizationId      String    @unique
+  planId              String
+  status              String    @default("TRIALING")
+  billingInterval     String    @default("MONTHLY")
+  startDate           DateTime  @default(now())
+  trialStart          DateTime?
+  trialEnd            DateTime?
+  currentPeriodStart  DateTime?
+  currentPeriodEnd    DateTime?
+  nextBillingDate     DateTime?
+  gracePeriodEnd      DateTime?
+  cancelledAt         DateTime?
+  cancellationReason  String?
+  autoRenew           Boolean   @default(true)
+  paymentStatus       String    @default("NONE")
+  failedPaymentCount  Int       @default(0)
+  lastPaymentFailedAt DateTime?
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+
+  organization     Organization          @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  plan             SubscriptionPlan      @relation(fields: [planId], references: [id], onDelete: Restrict)
+  modules          SubscriptionModule[]
+  history          SubscriptionHistory[]
+  invoices         BillingInvoice[]
+  scheduledChanges ScheduledPlanChange[]
+
+  @@index([status, nextBillingDate])
+  @@index([planId])
+}
+
+model SubscriptionModule {
+  id             String    @id @default(cuid())
+  subscriptionId String
+  moduleKey      String
+  status         String    @default("ACTIVE")
+  monthlyPrice   Decimal   @default(0) @db.Decimal(14, 2)
+  yearlyPrice    Decimal   @default(0) @db.Decimal(14, 2)
+  enabledAt      DateTime  @default(now())
+  expiresAt      DateTime?
+  cancelledAt    DateTime?
+  createdAt      DateTime  @default(now())
+
+  subscription OrganizationSubscription @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
+
+  @@unique([subscriptionId, moduleKey])
+  @@index([moduleKey, status])
+}
+
+model SubscriptionHistory {
+  id             String    @id @default(cuid())
+  organizationId String
+  subscriptionId String?
+  planId         String?
+  planName       String
+  action         String
+  fromStatus     String?
+  toStatus       String?
+  fromPlanName   String?
+  toPlanName     String?
+  effectiveAt    DateTime?
+  actorUserId    String?
+  actorEmail     String?
+  metadata       Json?
+  createdAt      DateTime  @default(now())
+
+  organization Organization              @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  subscription OrganizationSubscription? @relation(fields: [subscriptionId], references: [id], onDelete: SetNull)
+  plan         SubscriptionPlan?         @relation(fields: [planId], references: [id], onDelete: SetNull)
+
+  @@index([organizationId, createdAt])
+  @@index([action, createdAt])
+}
+
+model ScheduledPlanChange {
+  id             String    @id @default(cuid())
+  organizationId String
+  subscriptionId String
+  targetPlanId   String
+  targetInterval String?
+  action         String
+  effectiveAt    DateTime
+  reason         String?
+  status         String    @default("SCHEDULED")
+  processedAt    DateTime?
+  skippedReason  String?
+  metadata       Json?
+  createdAt      DateTime  @default(now())
+
+  organization Organization             @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  subscription OrganizationSubscription @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
+  plan         SubscriptionPlan         @relation(fields: [targetPlanId], references: [id], onDelete: Restrict)
+
+  @@index([status, effectiveAt])
+}
+
+model BillingProfile {
+  id                String   @id @default(cuid())
+  organizationId    String   @unique
+  billingEmail      String
+  companyName       String?
+  address           String?
+  taxId             String?
+  phone             String?
+  paymentMethodType String?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+}
+
+model BillingInvoice {
+  id                 String    @id @default(cuid())
+  organizationId     String
+  subscriptionId     String?
+  invoiceNumber      String    @unique
+  status             String    @default("DRAFT")
+  currency           String    @default("BDT")
+  billingPeriodStart DateTime?
+  billingPeriodEnd   DateTime?
+  description        String?
+  subtotal           Decimal   @db.Decimal(14, 2)
+  discountAmount     Decimal   @default(0) @db.Decimal(14, 2)
+  taxRate            Decimal   @default(0) @db.Decimal(7, 4)
+  taxAmount          Decimal   @default(0) @db.Decimal(14, 2)
+  totalAmount        Decimal   @db.Decimal(14, 2)
+  amountPaid         Decimal   @default(0) @db.Decimal(14, 2)
+  issueDate          DateTime  @default(now())
+  dueDate            DateTime
+  paidAt             DateTime?
+  finalizedAt        DateTime?
+  voidedAt           DateTime?
+  refundedAt         DateTime?
+  metadata           Json?
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+
+  organization Organization              @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  subscription OrganizationSubscription? @relation(fields: [subscriptionId], references: [id], onDelete: SetNull)
+  items        BillingInvoiceItem[]
+  payments     Payment[]
+
+  @@index([organizationId, createdAt])
+  @@index([status, dueDate])
+}
+
+model BillingInvoiceItem {
+  id          String   @id @default(cuid())
+  invoiceId   String
+  description String
+  itemType    String
+  referenceId String?
+  quantity    Int      @default(1)
+  unitAmount  Decimal  @db.Decimal(14, 2)
+  amount      Decimal  @db.Decimal(14, 2)
+  createdAt   DateTime @default(now())
+
+  invoice BillingInvoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+
+  @@index([invoiceId])
+}
+
+model Payment {
+  id                String    @id @default(cuid())
+  organizationId    String
+  invoiceId         String
+  subscriptionId    String?
+  provider          String
+  method            String
+  status            String    @default("PENDING")
+  amount            Decimal   @db.Decimal(14, 2)
+  currency          String
+  providerReference String?
+  idempotencyKey    String    @unique
+  failureReason     String?
+  paidAt            DateTime?
+  verifiedAt        DateTime?
+  metadata          Json?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  organization Organization     @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  invoice      BillingInvoice   @relation(fields: [invoiceId], references: [id], onDelete: Restrict)
+  attempts     PaymentAttempt[]
+
+  @@index([organizationId, createdAt])
+  @@index([invoiceId, status])
+  @@index([provider, providerReference])
+}
+
+model PaymentAttempt {
+  id             String   @id @default(cuid())
+  paymentId      String?
+  organizationId String
+  provider       String
+  status         String
+  reference      String?
+  errorCode      String?
+  errorMessage   String?
+  idempotencyKey String?
+  createdAt      DateTime @default(now())
+
+  payment      Payment?     @relation(fields: [paymentId], references: [id], onDelete: SetNull)
+  Organization Organization @relation(fields: [organizationId], references: [id])
+
+  @@index([organizationId, createdAt])
+}
+
+model PaymentWebhookEvent {
+  id             String    @id @default(cuid())
+  provider       String
+  eventId        String    @unique
+  signatureValid Boolean   @default(false)
+  payload        Json
+  status         String    @default("PENDING")
+  processedAt    DateTime?
+  error          String?
+  createdAt      DateTime  @default(now())
+
+  @@index([provider, status, createdAt])
+}
+
+model UsageRecord {
+  id             String   @id @default(cuid())
+  organizationId String
+  category       String
+  quantity       Int      @default(0)
+  periodStart    DateTime
+  periodEnd      DateTime
+  resourceId     String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@unique([organizationId, category, periodStart, resourceId])
+  @@index([organizationId, periodStart])
+}
+
+model PaymentGatewayConfiguration {
+  id                String   @id @default(cuid())
+  provider          String   @unique
+  displayName       String
+  isEnabled         Boolean  @default(false)
+  environment       String   @default("SANDBOX")
+  /// Non-secret public configuration only. Secrets stay in environment variables.
+  config            Json?
+  webhookConfigured Boolean  @default(false)
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+}
+
+model PlatformSetting {
+  key       String   @id
+  value     Json
+  updatedAt DateTime @updatedAt
 }

@@ -2,8 +2,10 @@ import { prisma } from '@/core/db/prisma';
 import type { CreateEmployeeInput, CreateLeaveRequestInput, MarkAttendanceInput } from '@/core/types';
 import { startApproval } from '@/core/workflows/engine';
 import { createNotification } from '@/core/notifications/service';
+import { assertUsageLimit } from '@/core/billing/usage';
 
 export async function createEmployee(input: CreateEmployeeInput) {
+  await assertUsageLimit(input.organizationId, 'EMPLOYEES');
   await prisma.employee.create({
     data: {
       organizationId: input.organizationId,

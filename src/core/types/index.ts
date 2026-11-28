@@ -97,6 +97,8 @@ export const PERMISSION_KEYS = [
   'data.retention.manage',
   'sales.view',
   'sales.create',
+  'billing.view',
+  'billing.manage',
 ] as const;
 
 export type Permission = (typeof PERMISSION_KEYS)[number];
@@ -126,6 +128,8 @@ export interface AuthUserFields {
   roleIsActive: boolean;
   organizationIsActive: boolean;
   sessionTokenId?: string;
+  isPlatformAdmin?: boolean;
+  platformAdminId?: string;
 }
 
 export interface AuthenticatedSessionUser extends AuthUserFields {
@@ -134,6 +138,8 @@ export interface AuthenticatedSessionUser extends AuthUserFields {
 
 export interface AuthTokenClaims {
   id?: string;
+  isPlatformAdmin?: boolean;
+  platformAdminId?: string;
   sessionTokenId?: string;
   revoked?: boolean;
   revokedReason?: string;
@@ -195,6 +201,8 @@ export const ROLE_PERMISSIONS: Record<Role, readonly PermissionGrant[]> = {
     'notifications.preferences.manage',
     'settings.view',
     'data.export',
+    'billing.view',
+    'billing.manage',
   ],
   Employee: [
     'hrm.view',
@@ -205,6 +213,7 @@ export const ROLE_PERMISSIONS: Record<Role, readonly PermissionGrant[]> = {
     'workflow.view',
     'notifications.view',
     'notifications.preferences.manage',
+    'billing.view',
   ],
 };
 
