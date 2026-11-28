@@ -15,6 +15,7 @@ import {
   updateRole,
   updateUserRole,
 } from './model';
+import { revokeUserSessions } from '@/core/security/sessions';
 
 const permissionSchema = z.array(z.enum(PERMISSION_KEYS)).max(PERMISSION_KEYS.length);
 const roleIdSchema = z.string().trim().min(1).max(64);
@@ -161,6 +162,13 @@ export async function updateUserRoleAction(
     userId: parsedUserId.data,
     roleId: parsedRoleId.data,
   });
-  if (result.success) revalidateRoleManagement();
+  if (result.success) {
+    await revokeUserSessions(
+      tenant.organizationId,
+      parsedUserId.data,
+      'ROLE_CHANGED',
+    );
+    revalidateRoleManagement();
+  }
   return result;
 }

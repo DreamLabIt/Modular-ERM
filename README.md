@@ -26,7 +26,7 @@ Full-featured, white-label, multi-tenant Enterprise Resource Management (ERM) bu
 2. Run:
    ```bash
    npm install
-   npx prisma db push
+   npx prisma migrate deploy
    npm run db:seed
    npm run dev
    ```
@@ -432,3 +432,106 @@ Run the permission evaluation and delegation tests with:
 ```bash
 npm test
 ```
+
+---
+
+# Enterprise Core Infrastructure (Systems A–E)
+
+This project now includes five cross-cutting enterprise systems that are shared by all nine business modules. They are implemented in `src/core/**`, exposed through Server Actions under the dashboard routes, and persisted through forward-only Prisma migrations in `prisma/migrations`.
+
+## A. Security, Audit & Sessions
+
+- **DB-authoritative RBAC.** `src/lib/permissions.ts` is the single permission evaluator; `src/core/auth/authorization.ts` provides `requireActionPermission`, `requireAnyActionPermission`, `can`, and `canAny` for Server Actions/API routes. `organizationId` is always taken from the server-side session (`src/core/auth/session.ts`), never from client payloads. `src/core/tenant/index.ts` supplies `tenantWhere`, `assertOrganizationMatch`, and `requireTenantRecord` helpers.
+- **Enforceable sessions.** NextAuth signs a `jti` (`sessionTokenId`) into the JWT and creates a `UserSession` row at sign-in. The `jwt` callback calls `validateSessionToken` on every request; revoked, expired, or missing sessions are rejected even while the JWT is cryptographically valid. `revokeSessionById`, `revokeUserSessions`, and `revokeSessionByToken` are used for admin revocation, role changes, and logout. Admin session revocation is available at `/settings/security`.
+- **Audit trail.** `src/core/audit/index.ts` writes structured `AuditLog` records with actor, action, resource, old/new values, request metadata, IP, user agent and correlation id. `sanitizeAuditPayload` recursively redacts passwords, tokens, secrets, cookies, and credentials. Login events are written to `LoginHistory` with `SUCCESS`, `FAILED`, `BLOCKED`, and `LOGOUT` statuses. The legacy `SecurityAuditLog` remains intact for existing module code and is written alongside the new audit service where relevant.
+- **Rate limiting.** `src/core/security/rate-limit.ts` uses Upstash Redis REST when `UPSTASH_REDIS_REST_URL`/`UPSTASH_REDIS_REST_TOKEN` are set, and otherwise uses the `RateLimitBucket` PostgreSQL table with a fixed window. There is no in-memory-only production limiter. Sign-in is limited per IP and per email, configurable via `LOGIN_RATE_LIMIT_*`.
+- **Retention.** `DataRetentionPolicy` and `RetentionRun` implement per-tenant retention with a legal hold that skips a data type entirely. Policies are managed at `/settings/data-management`.
+
+Route: `/settings/security` (requires `audit.view`, `login_history.view`, or `sessions.manage` for individual sections).
+
+## B. Workflow & Approval Engine
+
+- Reusable, configurable workflows (`ApprovalWorkflow`, `ApprovalWorkflowStep`) with sequential and parallel modes, `minApprovals` committees, fallback approvers, optional per-step conditions, and SLA due hours.
+- Requests snapshot the workflow version and steps (`ApprovalRequest`, `ApprovalRequestStep`) so changing a workflow never rewrites history. A full action history (`ApprovalAction`) records submission, approvals, rejections, delegation, cancellation, resubmission and completion.
+- Conditions are **structured JSON only** (`eq`, `neq`, `gt`, `gte`, `lt`, `lte`, `in`, `not_in`, `contains`, `exists` with `all`/`any`/`not` trees). `src/core/workflows/conditions.ts` validates field names and never evaluates JavaScript.
+- Delegation is time-bounded and optionally module-scoped (`ApprovalDelegation`), and is checked by the approver resolver.
+- Rejection requires a reason. Final decisions apply the business state change through `src/core/workflows/adapters.ts` **inside the same serializable transaction** as the approval action. Existing PO transitions are duplicated into `PurchaseOrderApproval` for backward compatibility.
+- Built-in adapters: `LEAVE_REQUEST`, `PAYROLL_RUN`, `PURCHASE_ORDER`, `PROJECT_EXPENSE`, `STOCK_ADJUSTMENT`, `SALES_INVOICE` (reject cancels a draft invoice).
+- Editing a workflow that already has requests publishes a new version instead of mutating in-flight history.
+
+Routes: `/workflows` (configuration + delegation), `/approvals` and `/approvals/[id]` (decisions, history, resubmit).
+
+**Module integrations:** leave requests start an approval workflow atomically and notify the requester; Purchase Order submission starts a workflow and the direct approve/reject endpoints refuse to bypass a pending workflow; stock adjustments and invoice issue emit notifications; invoice due dates create durable reminder jobs.
+
+## C. Notifications
+
+- Multi-channel delivery: in-app (`Notification`), email and SMS (`NotificationDelivery`). Providers are `resend` (email) and `twilio` (SMS) via plain `fetch`; no new runtime dependencies were added. When a provider is unconfigured, the delivery row becomes `SKIPPED` with an explicit error — the UI never reports successful delivery.
+- Per-user, per-category preferences (`NotificationPreference`) with a mandatory in-app security channel when the organization enforces security notifications.
+- Failed deliveries retry with exponential backoff up to five attempts, then become `FAILED`.
+- Durable scheduled reminders (`NotificationJob`) use a unique `dedupeKey` so repeated scheduling never duplicates messages. `src/core/notifications/scheduler.ts` enqueues approval-due, invoice-overdue, low-stock and task-deadline reminders.
+- Background work runs through the authenticated `POST/GET /api/cron/notifications` endpoint. It also processes pending deliveries, purges expired exports and stale sessions, and cleans up old jobs. **Configure `CRON_SECRET`**; without it the endpoint returns 503. Example crontab: `*/5 * * * * curl -X POST -H "Authorization: Bearer $CRON_SECRET" https://your-host/api/cron/notifications`.
+
+Route: `/notifications` (inbox, preferences, provider status, delivery diagnostics, test buttons).
+
+## D. System Settings
+
+- `OrganizationSettings` adds currency code/symbol/decimal precision/display format, IANA timezone, date format, 12H/24H time format, fiscal-year start, week start and security-notification enforcement. Values are validated with `Intl` (`assertValidOrganizationSettings`).
+- Company profile fields on `Organization`: address, phone, email, website, tax id and registration number.
+- `TaxConfiguration` supports VAT/sales/income/withholding/other with inclusive/exclusive rates and effective date ranges.
+- `FiscalYear` supports open/current/closed states with an explicit reopen action and audit history.
+- `DocumentSequence` plus `src/core/settings/document-numbering.ts` allocates numbers with a single atomic `UPDATE … RETURNING` inside the caller's transaction. `INSERT … ON CONFLICT DO NOTHING` initialises sequences safely under concurrency. PO and invoice creation now use these sequences instead of random numbers.
+
+Route: `/settings`.
+
+## E. Data Management
+
+- **Import:** CSV and XLSX parsing with strict limits (10 MB, 5,000 rows, 100 columns, 2,000 chars/cell). `src/core/data/csv.ts` handles quoted CSV; `src/core/data/xlsx.ts` is a minimal ZIP/XML reader built on `zlib` (shared strings, inline strings, numbers, booleans; formulas/macros are never executed). Preview validates with the same row validators inside a deliberately rolled-back transaction. Execution is atomic per job and records per-row errors in `ImportJob`. Definitions: employees, customers, suppliers, products, leads, projects.
+- **Export:** real CSV, OOXML `.xlsx` (dependency-free ZIP writer with checksums and inline strings) and PDF (existing `buildPdfDocument`). Exports are generated into `storage/exports`, protected by a random download token bound to organization and creator, and expire after 24 hours. CSV/XLSX cells beginning with `= + - @` are prefixed with `'` to prevent formula injection.
+- **Backup/restore:** operator-only logical `pg_dump` backups with SHA-256 checksum verification, retention cleanup, and a documented `pg_restore` CLI procedure. `BACKUP_OPERATOR_EMAILS` must be configured; there is intentionally no org-admin restore button.
+- **Archive:** customers, leads, products and employees can be archived/restored with a JSON snapshot and full reversibility.
+- **Retention:** tenant policies for audit logs, login history, notification history, session history and import/export artifacts, with DELETE/ANONYMIZE actions, legal hold, and an audited run history.
+
+Route: `/settings/data-management`.
+
+## Permissions Added
+
+`audit.export`, `settings.view`, `settings.security.manage`, `sessions.manage`, `login_history.view`, `workflow.view`, `workflow.manage`, `workflow.approve`, `workflow.delegate`, `notifications.view`, `notifications.preferences.manage`, `data.import`, `data.export`, `data.backup.manage`, `data.archive.manage`, `data.retention.manage`. Admin keeps `*`; Manager and Employee defaults were updated in `src/core/types/index.ts`. Existing role permission rows in the database are authoritative and are **not** reset by the seed.
+
+## Environment Variables
+
+See `.env.example`. New optional settings: `LOGIN_RATE_LIMIT_*`, `UPSTASH_REDIS_REST_*`, `CRON_SECRET`, `EMAIL_PROVIDER`/`RESEND_*`, `SMS_PROVIDER`/`TWILIO_*`, `BACKUP_OPERATOR_EMAILS`, `BACKUP_SCHEDULE`, `BACKUP_RETENTION_DAYS`.
+
+## Migrations
+
+Two forward-only migrations exist:
+
+1. `00000000000000_baseline` — the original committed schema, for databases created with `prisma db push`. Mark it applied with `npx prisma migrate resolve --applied 00000000000000_baseline` **before** running `migrate deploy`.
+2. `20261128000000_enterprise_core_infrastructure` — audit/session/rate-limit/workflow/notification/settings/data-management tables, resubmission attempts, SLA columns and company-profile columns.
+
+The baseline was generated from the original committed schema and the incremental migration from the original schema to the current one, so a fresh `migrate deploy` and an upgrade from the legacy schema both converge on the same result. This was verified against a temporary empty database. No destructive migration or database reset is used. Always back up before upgrading an existing database.
+
+## Verification
+
+The following were run against this working tree:
+
+```bash
+npx prisma validate
+npx prisma generate
+npx prisma migrate deploy
+npm run db:seed
+npx tsc --noEmit
+npm run lint
+npm test            # 69 tests passing
+npm run build
+```
+
+`src/core/enterprise.test.ts` adds 12 tests covering condition safety, audit redaction, rate limiting, session revocation, audit search, concurrent document numbering, sequential workflows with delegation, rejection reasons and business-state updates, import preview rollback/execute, legal-hold retention, and archive/restore.
+
+## Deliberate Limitations
+
+- **Row-level security is not enabled.** PostgreSQL RLS would require rewriting every existing query to set a session context; tenant isolation is instead enforced in application code at every server action and query boundary. This is documented rather than silently enabled.
+- **File artifacts are stored on the local filesystem** (`storage/exports`, `storage/backups`). On a multi-instance deployment, use shared object storage and point `storagePath` at it; downloads are already token- and tenant-checked.
+- **Full restore is an operator CLI procedure**, not a dashboard action, because restoring over a live tenant is destructive.
+- **Payroll-run and project-expense workflow adapters are implemented** but those two modules do not yet expose a submission endpoint that starts a workflow; their direct approval paths remain unchanged. The engine and adapters are ready for that integration.
+- **Redis is an optional adapter** via Upstash REST; no local Redis server or additional npm dependency is required.
+- **Cron must be wired externally** with `CRON_SECRET`; reminders are durable in the database but the platform scheduler is deployment-specific.

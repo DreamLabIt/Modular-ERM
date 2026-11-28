@@ -56,6 +56,7 @@ export async function createLeaveRequestAction(formData: FormData) {
     endDate,
     days,
     reason,
+    actorUserId: tenant.userId,
   });
   revalidatePath('/hrm/leaves');
 }

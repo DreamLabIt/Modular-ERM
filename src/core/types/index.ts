@@ -78,7 +78,23 @@ export const PERMISSION_KEYS = [
   'users_roles.view',
   'users_roles.manage',
   'audit.view',
+  'audit.export',
   'settings.manage',
+  'settings.view',
+  'settings.security.manage',
+  'sessions.manage',
+  'login_history.view',
+  'workflow.view',
+  'workflow.manage',
+  'workflow.approve',
+  'workflow.delegate',
+  'notifications.view',
+  'notifications.preferences.manage',
+  'data.import',
+  'data.export',
+  'data.backup.manage',
+  'data.archive.manage',
+  'data.retention.manage',
   'sales.view',
   'sales.create',
 ] as const;
@@ -109,6 +125,7 @@ export interface AuthUserFields {
   userIsActive: boolean;
   roleIsActive: boolean;
   organizationIsActive: boolean;
+  sessionTokenId?: string;
 }
 
 export interface AuthenticatedSessionUser extends AuthUserFields {
@@ -117,6 +134,9 @@ export interface AuthenticatedSessionUser extends AuthUserFields {
 
 export interface AuthTokenClaims {
   id?: string;
+  sessionTokenId?: string;
+  revoked?: boolean;
+  revokedReason?: string;
 }
 
 export const ROLE_PERMISSIONS: Record<Role, readonly PermissionGrant[]> = {
@@ -168,8 +188,24 @@ export const ROLE_PERMISSIONS: Record<Role, readonly PermissionGrant[]> = {
     'sales.create',
     'reports.view',
     'reports.export',
+    'workflow.view',
+    'workflow.approve',
+    'workflow.delegate',
+    'notifications.view',
+    'notifications.preferences.manage',
+    'settings.view',
+    'data.export',
   ],
-  Employee: ['hrm.view', 'hrm.self_service', 'payroll.payslip.self', 'projects.view', 'projects.time.track'],
+  Employee: [
+    'hrm.view',
+    'hrm.self_service',
+    'payroll.payslip.self',
+    'projects.view',
+    'projects.time.track',
+    'workflow.view',
+    'notifications.view',
+    'notifications.preferences.manage',
+  ],
 };
 
 export type ModuleKey =
@@ -204,6 +240,7 @@ export interface TenantSession {
   userId: string;
   name: string;
   email: string;
+  roleId: string;
   roleName: string;
   organizationId: string;
   authorization: PermissionContext;
@@ -405,6 +442,7 @@ export interface CreateLeaveRequestInput {
   endDate: Date;
   days: number;
   reason: string;
+  actorUserId?: string;
 }
 
 export interface CreateProductInput {
@@ -571,6 +609,7 @@ export interface UpdateBrandingInput {
   primaryColor: string;
   currency: string;
   address: string;
+  logoUrl?: string | null;
 }
 
 export interface RegisterOrganizationInput {

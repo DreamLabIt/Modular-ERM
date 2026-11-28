@@ -9,6 +9,7 @@ export async function updateBranding(input: UpdateBrandingInput) {
       primaryColor: input.primaryColor,
       currency: input.currency,
       address: input.address,
+      ...(input.logoUrl !== undefined ? { logoUrl: input.logoUrl || null } : {}),
     },
   });
 }

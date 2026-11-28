@@ -5,9 +5,13 @@ import { findTenantOrganization } from './model';
 
 export type { TenantSession } from '@/core/types';
 
-export async function getRequiredTenantSession(): Promise<TenantSession> {
+/**
+ * Resolves a tenant session without issuing a redirect. Returns null when the
+ * session is missing, inactive, or the organization is no longer available.
+ */
+export async function getOptionalTenantSession(): Promise<TenantSession | null> {
   const session = await auth();
-  if (!session?.user) redirect("/login");
+  if (!session?.user) return null;
 
   const user = session.user;
   if (
@@ -19,15 +23,17 @@ export async function getRequiredTenantSession(): Promise<TenantSession> {
     !user.roleIsActive ||
     !user.organizationIsActive
   ) {
-    redirect('/login');
+    return null;
   }
+
   const organization = await findTenantOrganization(user.organizationId);
-  if (!organization?.isActive) redirect('/login');
+  if (!organization?.isActive) return null;
 
   return {
     userId: user.id,
     name: user.name ?? '',
     email: user.email ?? '',
+    roleId: user.roleId,
     roleName: user.roleName,
     organizationId: user.organizationId,
     authorization: {
@@ -47,4 +53,10 @@ export async function getRequiredTenantSession(): Promise<TenantSession> {
     },
     enabledModules: organization.modules.map((module) => module.moduleKey),
   };
+}
+
+export async function getRequiredTenantSession(): Promise<TenantSession> {
+  const tenant = await getOptionalTenantSession();
+  if (!tenant) redirect('/login');
+  return tenant;
 }

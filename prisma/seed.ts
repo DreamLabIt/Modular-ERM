@@ -286,6 +286,59 @@ async function main() {
     await prisma.accountTransaction.createMany({ data: txToCreate });
   }
 
+  // Enterprise infrastructure defaults. Idempotent: re-running the seed keeps
+  // any administrator customisations while filling in missing rows.
+  await prisma.organizationSettings.upsert({
+    where: { organizationId: org.id },
+    update: {},
+    create: {
+      organizationId: org.id,
+      currencyCode: org.currency || "BDT",
+      currencySymbol: org.currency === "USD" ? "$" : "৳",
+    },
+  });
+
+  const defaultSequences = [
+    { documentType: "SALES_INVOICE", prefix: "INV" },
+    { documentType: "PURCHASE_ORDER", prefix: "PO" },
+    { documentType: "QUOTATION", prefix: "QT" },
+    { documentType: "PAYMENT_RECEIPT", prefix: "PAY" },
+    { documentType: "CREDIT_NOTE", prefix: "CN" },
+    { documentType: "DEBIT_NOTE", prefix: "DN" },
+    { documentType: "JOURNAL_ENTRY", prefix: "JE" },
+    { documentType: "PAYROLL_RUN", prefix: "PRUN" },
+    { documentType: "PURCHASE_REQUISITION", prefix: "PR" },
+  ];
+  for (const sequence of defaultSequences) {
+    await prisma.documentSequence.upsert({
+      where: {
+        organizationId_documentType: {
+          organizationId: org.id,
+          documentType: sequence.documentType,
+        },
+      },
+      update: {},
+      create: { organizationId: org.id, ...sequence },
+    });
+  }
+
+  const defaultRetention = [
+    { dataType: "AUDIT_LOG", retentionDays: 365, action: "DELETE" },
+    { dataType: "LOGIN_HISTORY", retentionDays: 180, action: "ANONYMIZE" },
+    { dataType: "NOTIFICATION_HISTORY", retentionDays: 90, action: "DELETE" },
+    { dataType: "SESSION_HISTORY", retentionDays: 90, action: "DELETE" },
+    { dataType: "IMPORT_EXPORT_FILES", retentionDays: 30, action: "DELETE" },
+  ];
+  for (const policy of defaultRetention) {
+    await prisma.dataRetentionPolicy.upsert({
+      where: {
+        organizationId_dataType: { organizationId: org.id, dataType: policy.dataType },
+      },
+      update: {},
+      create: { organizationId: org.id, ...policy, isActive: false },
+    });
+  }
+
   console.log("Seed completed! Login: admin@demo-corp.com / Admin@123");
 }
 

@@ -1,6 +1,8 @@
 import { Prisma } from '@prisma/client';
 import { prisma } from '@/core/db/prisma';
 import { applyStockDelta, deductStockForSales } from '@/modules/inventory/service';
+import { allocateDocumentNumber } from '@/core/settings/document-numbering';
+import { scheduleNotification } from '@/core/notifications/scheduler';
 import type {
   CreateInvoiceInput,
   CreatePurchaseOrderInput,
@@ -16,14 +18,6 @@ import {
 type ModelResult<T = undefined> =
   | { success: true; data?: T }
   | { success: false; error: string };
-
-function createInvoiceNumber() {
-  return `INV-${Date.now().toString().slice(-8)}-${Math.random().toString(36).slice(2, 6).toUpperCase()}`;
-}
-
-function createPoNumber() {
-  return `PO-${Date.now().toString().slice(-8)}-${Math.random().toString(36).slice(2, 5).toUpperCase()}`;
-}
 
 /**
  * Records an audit event using the existing SecurityAuditLog infrastructure.
@@ -97,16 +91,10 @@ export async function createPurchaseOrder(input: CreatePurchaseOrderInput) {
   }
 
   return prisma.$transaction(async (tx) => {
-    // Generate a unique PO number within the organization scope, retrying on
-    // uniqueness conflicts like the legacy generator did.
-    let poNumber = createPoNumber();
-    for (let attempt = 0; attempt < 5; attempt++) {
-      const existing = await tx.purchaseOrder.findFirst({
-        where: { organizationId: input.organizationId, poNumber },
-      });
-      if (!existing) break;
-      poNumber = createPoNumber();
-    }
+    // Atomic, configurable document numbering. The sequence row is updated in
+    // the same transaction as the Purchase Order, so concurrent requests can
+    // never receive the same number.
+    const poNumber = await allocateDocumentNumber(tx, input.organizationId, 'PURCHASE_ORDER');
 
     const itemData = input.items.map((item) => {
       const product = productById.get(item.productId)!;
@@ -374,7 +362,7 @@ export async function createInvoice(input: CreateInvoiceInput): Promise<ModelRes
         data: {
           organizationId: input.organizationId,
           customerId: customer.id,
-          invoiceNumber: createInvoiceNumber(),
+          invoiceNumber: await allocateDocumentNumber(tx, input.organizationId, 'SALES_INVOICE'),
           status: 'DRAFT',
           subtotal,
           taxAmount,
@@ -527,6 +515,21 @@ export async function issueInvoice(input: {
     if (updated.count !== 1) {
       return { success: false, error: 'Invoice status changed during issue. Please retry.' } as const;
     }
+
+    // Durable, idempotent payment reminder. The cron worker delivers it on or
+    // after the due date; dedupeKey prevents duplicates on repeated runs.
+    await scheduleNotification({
+      organizationId: input.organizationId,
+      type: 'INVOICE_DUE',
+      category: 'SALES',
+      dedupeKey: `invoice-due:${invoice.id}`,
+      runAt: input.dueDate,
+      title: 'Invoice due',
+      message: `Invoice ${invoice.invoiceNumber} is due on ${input.dueDate.toISOString().slice(0, 10)}.`,
+      actionUrl: '/sales-purchase/invoices',
+      resourceType: 'INVOICE',
+      resourceId: invoice.id,
+    });
     return { success: true } as const;
   });
 }

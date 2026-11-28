@@ -20,6 +20,12 @@ import {
   Layers,
   Menu,
   X,
+  Bell,
+  Workflow,
+  ClipboardCheck,
+  Database,
+  ScrollText,
+  History,
   type LucideIcon,
 } from "lucide-react";
 import { signOut } from "next-auth/react";
@@ -36,6 +42,12 @@ const iconMap: Record<string, LucideIcon> = {
   ShoppingCart,
   BarChart3,
   ShieldCheck,
+  Bell,
+  Workflow,
+  ClipboardCheck,
+  Database,
+  ScrollText,
+  History,
 };
 
 export function Sidebar({
@@ -221,20 +233,38 @@ export function Sidebar({
             })}
 
             <div className="pt-2 border-t border-slate-800">
-              {hasPermission(authorization, "settings.manage") && (
-                <Link
-                  href="/settings"
-                  onClick={() => setMobileOpen(false)}
-                  className={`flex items-center gap-2.5 px-3 py-2 rounded-lg text-xs font-medium transition ${
-                    pathname.startsWith("/settings")
-                      ? "bg-blue-600 text-white"
-                      : "text-slate-300 hover:bg-slate-900"
-                  }`}
-                >
-                  <Settings className="w-4 h-4 shrink-0" />
-                  <span className="truncate">White-Label & Licensing</span>
-                </Link>
-              )}
+              <div className="px-3 mb-1 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wider text-slate-400">
+                <Settings className="w-3.5 h-3.5 text-blue-400 shrink-0" />
+                <span>System</span>
+              </div>
+              <div className="space-y-0.5">
+                {[
+                  { label: "Approvals", href: "/approvals", permissions: ["workflow.view"], icon: ClipboardCheck },
+                  { label: "Workflows", href: "/workflows", permissions: ["workflow.view", "workflow.manage"], icon: Workflow },
+                  { label: "Notifications", href: "/notifications", permissions: ["notifications.view"], icon: Bell },
+                  { label: "Settings", href: "/settings", permissions: ["settings.manage"], icon: Settings },
+                  { label: "Security & Audit", href: "/settings/security", permissions: ["audit.view", "login_history.view", "sessions.manage"], icon: ScrollText },
+                  { label: "Data Management", href: "/settings/data-management", permissions: ["data.export", "data.import"], icon: Database },
+                ]
+                  .filter((item) => item.permissions.some((permission) => hasPermission(authorization, permission as never)))
+                  .map((item) => {
+                    const Icon = item.icon;
+                    const isActive = pathname === item.href || pathname.startsWith(item.href + "/");
+                    return (
+                      <Link
+                        key={item.href}
+                        href={item.href}
+                        onClick={() => setMobileOpen(false)}
+                        className={`flex items-center gap-2.5 px-3 py-1.5 rounded-lg text-xs font-medium transition truncate ${
+                          isActive ? "bg-slate-800 text-blue-300 font-semibold" : "text-slate-400 hover:text-white hover:bg-slate-900"
+                        }`}
+                      >
+                        <Icon className="w-4 h-4 shrink-0" />
+                        <span className="truncate">{item.label}</span>
+                      </Link>
+                    );
+                  })}
+              </div>
             </div>
           </nav>
         </div>

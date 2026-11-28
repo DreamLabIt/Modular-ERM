@@ -8,6 +8,32 @@ import {
   type PurchaseOrderStatus,
 } from './workflow';
 import { createReceiptNumber, createSecurityAuditLog } from './model';
+import { startApproval } from '@/core/workflows/engine';
+
+/**
+ * When a configurable workflow is active for Purchase Orders, the direct
+ * approve/reject endpoints must not bypass it. The workflow adapter applies
+ * the same business transition atomically when the final step completes.
+ */
+async function assertNoPendingWorkflow(
+  tx: Prisma.TransactionClient,
+  organizationId: string,
+  purchaseOrderId: string,
+) {
+  const pending = await tx.approvalRequest.findFirst({
+    where: {
+      organizationId,
+      resourceType: 'PURCHASE_ORDER',
+      resourceId: purchaseOrderId,
+      status: 'PENDING',
+    },
+    select: { id: true },
+  });
+  if (pending) {
+    return 'This Purchase Order is governed by an approval workflow. Approve or reject it from the Approvals page.';
+  }
+  return null;
+}
 
 type LifecycleResult =
   | { success: true; data?: { id: string } }
@@ -87,6 +113,27 @@ export async function submitPurchaseOrderForApproval(input: {
     await tx.purchaseOrderApproval.create({
       data: { organizationId: input.organizationId, purchaseOrderId: po.id, action: 'SUBMITTED_FOR_APPROVAL' },
     });
+
+    const workflow = await startApproval(
+      {
+        organizationId: input.organizationId,
+        moduleKey: 'sales_purchase',
+        resourceType: 'PURCHASE_ORDER',
+        resourceId: po.id,
+        title: `Purchase Order ${po.poNumber}`,
+        requesterId: input.actorUserId,
+        payload: {
+          poNumber: po.poNumber,
+          totalAmount: Number(po.totalAmount),
+          supplierId: po.supplierId,
+        },
+      },
+      tx,
+    );
+    if (!workflow.success && !workflow.noWorkflow) {
+      return { success: false, error: workflow.error };
+    }
+
     await createSecurityAuditLog(tx, {
       organizationId: input.organizationId,
       actorUserId: input.actorUserId,
@@ -117,6 +164,9 @@ export async function approvePurchaseOrder(input: {
     if (current === target) {
       return { success: false, error: 'The Purchase Order is already approved.' };
     }
+
+    const workflowBlock = await assertNoPendingWorkflow(tx, input.organizationId, po.id);
+    if (workflowBlock) return { success: false, error: workflowBlock };
 
     const before = current;
     await tx.purchaseOrder.update({
@@ -160,6 +210,9 @@ export async function rejectPurchaseOrder(input: {
     if (!isValidPurchaseOrderTransition(current, target)) {
       return { success: false, error: `The Purchase Order is ${current} and cannot be rejected.` };
     }
+
+    const workflowBlock = await assertNoPendingWorkflow(tx, input.organizationId, po.id);
+    if (workflowBlock) return { success: false, error: workflowBlock };
 
     const before = current;
     await tx.purchaseOrder.update({

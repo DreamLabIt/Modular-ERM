@@ -1,6 +1,7 @@
 import { prisma } from '@/core/db/prisma';
 import type { CreateProductInput } from '@/core/types';
 import { recordOpeningStock, adjustStockPosting } from './service';
+import { createNotification } from '@/core/notifications/service';
 
 export async function createProduct(input: CreateProductInput) {
   return prisma.$transaction(async (tx) => {
@@ -69,6 +70,20 @@ export async function adjustStock(input: {
     createdById: input.actorUserId ?? '',
     notes: input.notes,
   });
+  if (result.success && input.actorUserId) {
+    await createNotification({
+      organizationId: input.organizationId,
+      userId: input.actorUserId,
+      category: 'INVENTORY',
+      type: 'INFO',
+      title: 'Stock adjustment recorded',
+      message: `${input.adjustmentType} of ${input.quantity} units was recorded. Reason: ${input.reason}.`,
+      resourceType: 'STOCK_ADJUSTMENT',
+      actionUrl: '/inventory/stock-ledger',
+      channels: ['IN_APP'],
+      deliverNow: false,
+    }).catch(() => undefined);
+  }
   return { success: result.success, error: result.success ? undefined : result.error };
 }
 
